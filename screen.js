@@ -336,6 +336,37 @@
         }
     }
 
+    window.updaterMarkCurrent = async function () {
+        var btn = document.getElementById('updater-mark-current-btn');
+        var status = document.getElementById('updater-mark-current-status');
+        btn.disabled = true;
+        btn.textContent = 'Updating...';
+        status.textContent = '';
+        try {
+            var resp = await fetch('/api/plugins/update_manager/core/init', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{}'
+            });
+            var data = await resp.json();
+            if (data.ok) {
+                status.textContent = 'Tracking reset to ' + data.sha + ' (' + data.branch + ')';
+                status.className = 'text-xs text-green-400 ml-2';
+                btn.textContent = 'Mark as current';
+                setTimeout(function () { updaterCheck(); }, 1000);
+            } else {
+                status.textContent = data.error || 'Failed';
+                status.className = 'text-xs text-red-400 ml-2';
+                btn.textContent = 'Mark as current';
+            }
+        } catch (e) {
+            status.textContent = 'Network error';
+            status.className = 'text-xs text-red-400 ml-2';
+            btn.textContent = 'Mark as current';
+        }
+        btn.disabled = false;
+    };
+
     window.updaterCopyRebuildCmd = async function () {
         const btn = document.getElementById('updater-rebuild-copy-btn');
         const cmd = document.getElementById('updater-rebuild-cmd').textContent;

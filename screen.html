@@ -65,6 +65,10 @@
                         <summary class="cursor-pointer hover:text-gray-300">Show blocked files</summary>
                         <ul id="updater-rebuild-files" class="mt-2 space-y-0.5 font-mono text-[11px] text-gray-400"></ul>
                     </details>
+                    <p class="text-gray-500 text-[11px] mt-2 mb-2">Already rebuilt? Click below to re-initialize tracking to the latest upstream commit.</p>
+                    <button onclick="updaterMarkCurrent()" id="updater-mark-current-btn"
+                        class="bg-dark-600 hover:bg-dark-500 px-3 py-1.5 rounded-lg text-xs text-gray-300 transition">Mark as current</button>
+                    <span id="updater-mark-current-status" class="text-xs text-gray-500 ml-2"></span>
                 </div>
             </div>
         </div>
