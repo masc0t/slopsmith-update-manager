@@ -20,6 +20,14 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.10.0
+- **Auto-advance core marker after manual rebuild** — after `git pull && docker compose build web && docker compose up -d`, the persistent `core.json` marker no longer holds the pre-pull SHA forever. On startup the plugin reads the live SHA from the bind-mounted `.git/` and advances the marker when it lags behind, clearing the false "rebuild required" banner that used to stick around indefinitely.
+- **"Mark as current" button on the rebuild banner** — when a core update is blocked by unmounted-file changes, the amber banner now offers a one-click way to stamp the current remote HEAD as the installed marker. Useful when you've already rebuilt from the host and just want the UI to catch up without re-running the overlay.
+
+### v1.9.0
+- **Bulk `/updates` never spends `api.github.com` budget** — the cold first-run check no longer rate-limits halfway through your plugin list. Bulk detection now uses pure version-string comparison against `raw.githubusercontent.com` (separate, far more generous limit) and tries marker-branch → `main` → `master` for branch resolution. A 30-plugin cold start now costs 0 `api.github.com` calls, leaving the full 60/hour budget for on-demand actions. Version comparison is semver-aware (`_remote_is_newer`), so a feature branch with a bumped manifest no longer surfaces a spurious self-update.
+- **Per-plugin Check button always available** — the per-row Check button now appears on every non-bundled plugin, including rows in "Source unknown" or "Couldn't reach repo" error states. `/check/{plugin_id}` runs the full check (resolves default branch via `api.github.com`, fetches remote SHA) and retries source resolution with `force_registry=True`, so users are never permanently stuck on an unresolvable external plugin. New last-resort fallback probes `github.com/byrongamatos/slopsmith-plugin-<dir>` and accepts it only when the fetched `plugin.json` id matches.
+
 ### v1.8.2
 - **Detect external restarts** — the per-row "Updated · restart to apply" UI now clears itself when the server has been restarted outside the in-app "Restart now" flow (e.g. `docker compose restart`, host-side process kill). New `GET /api/plugins/update_manager/start_time` endpoint exposes the process start time; the frontend records it in `localStorage["update_manager:knownStartTime"]` and clears pending state + the restart banner when it sees the value change.
 
@@ -28,6 +36,15 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ### v1.8.0
 - **Per-plugin Check button** — each plugin row now has a "Check" button next to its primary action. Re-checks just that plugin against GitHub, useful when the bulk cold pass has burnt through GitHub's anonymous rate-limit window and left some rows in "Check failed". Backed by a new `GET /check/{plugin_id}` endpoint that reuses the same conditional-fetch / version-first short-circuit as the bulk pass.
+
+### v1.7.0
+- **Surface plugin versions** — Local and Remote columns now stack the `plugin.json` `version` (top) over the short SHA (bottom), so installed and available versions are visible at a glance instead of just opaque commit hashes.
+- **Pin to a specific version** — new per-row "Versions" link lazily fetches the available versions for a plugin (git tags + `plugin.json` bump-commits scanned from the default branch, capped at 30 entries). The popover lets you switch to any version — useful for downgrading when a release breaks something. `POST /update/{plugin_id}` accepts an optional `{ref}` body (`refs/tags/X` or a commit SHA) to pin the install.
+- **Bundled-install update detection** — desktop installs that ship plugins as plain directories (no `.git/`, no marker) can now detect updates: `_resolve_source` falls back to `plugin.json`'s optional `url`/`repository` field, then to the "Available Plugins" registry parsed from slopsmith's README (keyed by directory name, cached for 10 minutes).
+
+### v1.6.0
+- **Bundled-plugin awareness** — plugins shipped in-tree by the slopsmith core (those with `"bundled": true` in `plugin.json`, e.g. the 3D Highway) are now first-class in the UI. Bundled rows render with a lock-icon "Bundled" badge instead of being invisible, and Update/Uninstall both refuse with clear errors — preventing the previous footgun where an Uninstall would have happily `rmtree`d container-image files until the next rebuild restored them.
+- **Override warning in the registry** — Browse-tab entries whose dirname collides with a bundled plugin show an "Overrides bundled" pill, and Install prompts for confirmation before clobbering the bundled copy with an external override. `/updates` exposes a top-level `bundled[]` array and `/registry` annotates each entry with `overrides_bundled: bool`.
 
 ### v1.5.0
 - **Ignore non-core files** — updates to documentation (`*.md`, `docs/`), tests (`tests/`), and Claude config (`.claude/`) no longer block core updates. These paths are silently skipped during both blocker detection and extraction.
