@@ -1455,17 +1455,20 @@ def setup(app, context):
     # are bind-mounted from the updated host but the persistent marker still
     # holds the old SHA. Detect this by reading the live git HEAD (available
     # via the .git mount in docker-compose.yml) and auto-advance the marker.
-    try:
-        live_sha, live_branch, _ = _read_git_local_sha(APP_ROOT)
-        if live_sha:
-            marker = _load_core_marker()
-            if marker and marker.get("sha") != live_sha:
-                _save_core_marker(live_sha, live_branch or marker.get("branch", "main"))
-                context["log"].info(
-                    "core marker auto-advanced to %s (detected manual rebuild)", live_sha[:7]
-                )
-    except Exception:
-        pass
+    # Docker-only: the desktop app ships without /app/.git and doesn't use
+    # core-update tracking at all.
+    if not IS_DESKTOP:
+        try:
+            live_sha, live_branch, _ = _read_git_local_sha(APP_ROOT)
+            if live_sha:
+                marker = _load_core_marker()
+                if marker and marker.get("sha") != live_sha:
+                    _save_core_marker(live_sha, live_branch or marker.get("branch", "main"))
+                    context["log"].info(
+                        "core marker auto-advanced to %s (detected manual rebuild)", live_sha[:7]
+                    )
+        except Exception:
+            pass
 
     @app.get("/api/plugins/update_manager/config")
     def get_config():
