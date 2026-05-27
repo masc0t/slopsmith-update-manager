@@ -641,46 +641,70 @@ def test_is_bundled_does_not_flag_on_docker(tmp_path, monkeypatch):
     assert routes._is_bundled(p) is False
 
 
-# ── Registry browse "Bundled" vs "Installed" (dir-name/id mismatch) ──────
+# ── _norm_key / _repo_slug ────────────────────────────────────────────
 
 
-def test_registry_marks_bundled_when_dirname_matches_manifest_id(client, fake_dirs, monkeypatch):
-    """Regression: bundled plugins whose on-disk directory name differs
-    from their manifest id (dir `tabimport`/id `tab_import`, dir
-    `practice`/id `practice_journal`) were shown as plain "Installed"
-    instead of "Bundled" in the registry browser. The README install
-    command yields a dirname equal to the manifest *id*, so matching only
-    on the directory name missed them. They must report overrides_bundled.
+def test_norm_key_folds_case_and_separators():
+    assert routes._norm_key("Tab-View") == "tab_view"
+    assert routes._norm_key("transpose-chords") == "transpose_chords"
+    assert routes._norm_key("  Foo_Bar ") == "foo_bar"
+    assert routes._norm_key(None) == ""
+
+
+def test_repo_slug_strips_conventional_prefixes():
+    assert routes._repo_slug("byrongamatos/slopsmith-plugin-tabview") == "tabview"
+    assert routes._repo_slug("byrongamatos/slopsmith-plugin-guitar-theory") == "guitar-theory"
+    # Bare `slopsmith-` fallback (this repo) — longer prefix checked first.
+    assert routes._repo_slug("masc0t/slopsmith-update-manager") == "update-manager"
+    # No recognized prefix → repo name unchanged.
+    assert routes._repo_slug("someone/unrelated-repo") == "unrelated-repo"
+
+
+# ── Registry browse "Bundled" vs "Installed" (dir-name/id/slug mismatch) ──
+
+
+def test_registry_marks_bundled_across_dir_id_slug_mismatches(client, fake_dirs, monkeypatch):
+    """Regression: bundled plugins whose README install dirname matches
+    neither their on-disk directory name NOR their manifest id were shown
+    as "Installed" (or even an "Install" button) instead of "Bundled".
+
+    Covers all three identity shapes the matcher must fold together:
+      - dir != id, dirname == id     (tab_import: dir `tabimport`)
+      - dir != id, dirname == id     (practice_journal: dir `practice`)
+      - dir == id, dirname == slug   (tabview shipped under dir `tab_view`)
+      - dir == id, slug needs `-`→`_` (guitar_theory under `guitar-theory-lab`)
+      - dir == id == dirname         (setlist — already worked)
     """
     user_dir = fake_dirs["tmp"] / "user_plugins"
     bundled_dir = fake_dirs["tmp"] / "bundled_plugins"
     user_dir.mkdir()
     bundled_dir.mkdir()
-    # Only manually-installed plugin lives in the user dir.
     _write_plugin(user_dir, "midi_capo")
-    # Bundled plugins: directory name != manifest id.
     _write_plugin(bundled_dir, "tab_import", dirname="tabimport", name="Import Tab")
     _write_plugin(bundled_dir, "practice_journal", dirname="practice", name="Practice Journal")
-    # Bundled plugin whose dir name == id (the case that already worked).
+    _write_plugin(bundled_dir, "tabview", name="Tab View")
+    _write_plugin(bundled_dir, "guitar_theory", name="Guitar Theory Lab")
     _write_plugin(bundled_dir, "setlist")
     monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
     monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
 
     monkeypatch.setattr(routes, "_http_get", lambda *a, **kw: b"")
     monkeypatch.setattr(routes, "_parse_registry", lambda md: [
-        {"name": "Import Tab", "dirname": "tab_import", "url": "u", "repo": "r", "description": "d"},
-        {"name": "Practice Journal", "dirname": "practice_journal", "url": "u", "repo": "r", "description": "d"},
-        {"name": "Setlist Builder", "dirname": "setlist", "url": "u", "repo": "r", "description": "d"},
-        {"name": "MIDI Capo", "dirname": "midi_capo", "url": "u", "repo": "r", "description": "d"},
-        {"name": "Tab View", "dirname": "tab_view", "url": "u", "repo": "r", "description": "d"},
+        {"name": "Import Tab", "dirname": "tab_import", "url": "u", "repo": "o/slopsmith-plugin-tabimport", "description": "d"},
+        {"name": "Practice Journal", "dirname": "practice_journal", "url": "u", "repo": "o/slopsmith-plugin-practice", "description": "d"},
+        {"name": "Tab View", "dirname": "tab_view", "url": "u", "repo": "o/slopsmith-plugin-tabview", "description": "d"},
+        {"name": "Guitar Theory Lab", "dirname": "guitar-theory-lab", "url": "u", "repo": "o/slopsmith-plugin-guitar-theory", "description": "d"},
+        {"name": "Setlist Builder", "dirname": "setlist", "url": "u", "repo": "o/slopsmith-plugin-setlist", "description": "d"},
+        {"name": "MIDI Capo", "dirname": "midi_capo", "url": "u", "repo": "o/slopsmith-plugin-midi-capo", "description": "d"},
+        {"name": "Tuner", "dirname": "tuner", "url": "u", "repo": "o/slopsmith-plugin-tuner", "description": "d"},
     ])
 
     r = client.get("/api/plugins/update_manager/registry")
     assert r.status_code == 200
     by_dir = {e["dirname"]: e for e in r.json()["entries"]}
 
-    # Bundled plugins (regardless of dir/id mismatch) → Bundled.
-    for d in ("tab_import", "practice_journal", "setlist"):
+    # Every bundled plugin → Bundled, regardless of which token matched.
+    for d in ("tab_import", "practice_journal", "tab_view", "guitar-theory-lab", "setlist"):
         assert by_dir[d]["installed"] is True, d
         assert by_dir[d]["overrides_bundled"] is True, d
 
@@ -689,5 +713,5 @@ def test_registry_marks_bundled_when_dirname_matches_manifest_id(client, fake_di
     assert by_dir["midi_capo"]["overrides_bundled"] is False
 
     # Not present anywhere → installable.
-    assert by_dir["tab_view"]["installed"] is False
-    assert by_dir["tab_view"]["overrides_bundled"] is False
+    assert by_dir["tuner"]["installed"] is False
+    assert by_dir["tuner"]["overrides_bundled"] is False

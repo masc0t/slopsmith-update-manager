@@ -1,7 +1,7 @@
 {
   "id": "update_manager",
   "name": "Update Manager",
-  "version": "1.11.4",
+  "version": "1.11.5",
   "private": false,
   "nav": { "label": "Update Manager", "screen": "plugin-update_manager" },
   "screen": "screen.html",

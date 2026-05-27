@@ -20,6 +20,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.11.5
+- **Registry browse: match bundled plugins by repo slug, not just dirname** — extends the v1.11.4 fix. The README install command's clone-target dirname matches neither the bundled directory name nor the manifest id for some plugins (e.g. **Tab View** — dir/id `tabview`, registry dirname `tab_view`; **Guitar Theory Lab** — dir/id `guitar_theory`, registry dirname `guitar-theory-lab`), so those rows still showed an "Install" button or green "Installed" instead of "Bundled". `/registry` now matches each row against the on-disk directory name, the manifest id, **and** the GitHub repo slug (`slopsmith-plugin-<slug>`, which by convention equals the bundled directory name), with `-`/`_`/case folded. This catches every bundled plugin regardless of the README's dirname choice.
+
 ### v1.11.4
 - **Registry browse: bundled plugins with mismatched dir/id now show "Bundled"** — desktop-bundled plugins whose on-disk directory name differs from their manifest id (e.g. dir `tabimport`/id `tab_import`, dir `practice`/id `practice_journal`) were mislabeled as green "Installed" instead of "Bundled". The registry README's install command yields a dirname equal to the manifest *id*, but `/registry` matched only against on-disk directory names, so `overrides_bundled` came back false while the frontend's id-based fallback flipped `installed` true. `/registry` now matches registry dirnames against both the directory name and the manifest id, keeping the two flags consistent.
 
