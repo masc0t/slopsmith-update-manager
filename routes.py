@@ -1980,12 +1980,20 @@ def setup(app, context):
     @app.post("/api/plugins/update_manager/install")
     async def install(body: dict):
         url = (body.get("url") or "").strip()
-        dirname = (body.get("dirname") or "").strip()
-        if not SLUG_RE.match(dirname):
-            return {"error": "Invalid dirname"}
         owner, repo = _parse_repo_url(url)
         if not owner:
-            return {"error": "URL must be a GitHub repo"}
+            return {"error": "URL must be a GitHub repo (https://github.com/owner/repo)"}
+        # `dirname` is optional. Registry installs pass the README's
+        # clone-target dirname; ad-hoc "install from URL" of a plugin
+        # that isn't in the registry omits it, so derive one from the
+        # repo slug — strip the conventional slopsmith[-plugin]- prefix
+        # and normalise to the lowercase snake_case shape bundled plugin
+        # dirs use (e.g. repo `SlopSniffer` -> dir `slopsniffer`).
+        dirname = (body.get("dirname") or "").strip()
+        if not dirname:
+            dirname = _repo_slug(repo).replace("-", "_").lower()
+        if not SLUG_RE.match(dirname):
+            return {"error": "Invalid dirname"}
         target = PLUGINS_DIR / dirname
         if target.exists():
             return {"error": f"Plugin directory '{dirname}' already exists"}
