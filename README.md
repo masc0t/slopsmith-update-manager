@@ -20,6 +20,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.11.4
+- **Registry browse: bundled plugins with mismatched dir/id now show "Bundled"** — desktop-bundled plugins whose on-disk directory name differs from their manifest id (e.g. dir `tabimport`/id `tab_import`, dir `practice`/id `practice_journal`) were mislabeled as green "Installed" instead of "Bundled". The registry README's install command yields a dirname equal to the manifest *id*, but `/registry` matched only against on-disk directory names, so `overrides_bundled` came back false while the frontend's id-based fallback flipped `installed` true. `/registry` now matches registry dirnames against both the directory name and the manifest id, keeping the two flags consistent.
+
 ### v1.11.3
 - **Inventory the desktop app-bundle plugins dir** — on slopsmith-desktop, `SLOPSMITH_PLUGINS_DIR` only points at the writable user plugins dir (`%APPDATA%\slopsmith-desktop\plugins`), so plugins shipped inside the app bundle — including the Update Manager itself — were invisible to this plugin's inventory. Clicking **Check** on the update_manager row returned "Plugin not found". `_installed_plugin_dirs()` now scans both the user dir and the read-only bundled dir (where this plugin's own code is loaded from), and `_is_bundled` flags entries living under the bundled dir so the UI hides their Check/Update/Uninstall buttons (the desktop app's own auto-updater manages those).
 
