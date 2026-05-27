@@ -1910,9 +1910,23 @@ def setup(app, context):
         except Exception as e:
             return {"error": f"Failed to fetch registry: {e}"}
         entries = _parse_registry(md)
-        installed = _installed_plugin_dirs()
-        installed_dirs = {p.name for p in installed.values()}
-        bundled_dirs = {p.name for p in installed.values() if _is_bundled(p)}
+        installed = _installed_plugin_dirs()  # manifest id -> dir Path
+        # Match registry dirnames against BOTH the on-disk directory name
+        # AND the manifest id. The registry README's install command often
+        # yields a dirname that equals the plugin's manifest id rather than
+        # the directory the bundle actually ships it in (e.g. dir `tabimport`
+        # / id `tab_import`, dir `practice` / id `practice_journal`). Keying
+        # only on `p.name` made those registry rows fall through to a plain
+        # green "Installed" instead of "Bundled", because the frontend's own
+        # fallback (`installedSet.has(r.dirname)`) matches against manifest
+        # ids and flips `installed` True while `overrides_bundled` stayed
+        # False. Including ids here keeps the two flags consistent.
+        installed_dirs = {p.name for p in installed.values()} | set(installed.keys())
+        bundled_dirs = set()
+        for pid, p in installed.items():
+            if _is_bundled(p):
+                bundled_dirs.add(p.name)
+                bundled_dirs.add(pid)
         for e in entries:
             e["installed"] = e["dirname"] in installed_dirs
             # Surface dirname-collision with a bundled plugin so the UI
