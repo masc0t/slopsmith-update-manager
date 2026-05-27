@@ -550,6 +550,34 @@ def test_install_invalidates_inventory_cache(client, fake_dirs, monkeypatch):
     assert routes._inventory_cache is None
 
 
+def test_install_without_dirname_derives_from_repo_slug(client, fake_dirs, monkeypatch):
+    """Installing a not-in-registry plugin can omit dirname; the server
+    derives a snake_case dir from the repo slug (slopsmith[-plugin]-
+    prefix stripped, dashes → underscores)."""
+    monkeypatch.setattr(routes, "_default_branch", lambda o, r: "main")
+    monkeypatch.setattr(routes, "_latest_sha", lambda o, r, b: "deadbeef" * 5)
+    monkeypatch.setattr(routes, "_download_and_replace",
+                        lambda owner, repo, ref, target, preserve_git: target.mkdir(parents=True, exist_ok=True))
+    monkeypatch.setattr(routes, "_write_marker", lambda *a, **kw: None)
+
+    r = client.post(
+        "/api/plugins/update_manager/install",
+        json={"url": "https://github.com/someone/slopsmith-plugin-cool-thing"},
+    )
+    body = r.json()
+    assert body.get("ok") is True, body
+    assert body["dirname"] == "cool_thing", body
+
+
+def test_install_rejects_non_github_url(client):
+    r = client.post(
+        "/api/plugins/update_manager/install",
+        json={"url": "https://example.com/not/github"},
+    )
+    body = r.json()
+    assert "error" in body and "GitHub" in body["error"], body
+
+
 def test_apply_update_invalidates_inventory_cache(client, fake_dirs, monkeypatch):
     pdir = _write_plugin(fake_dirs["plugins"], "tgt", source_bytes=10)
     routes._get_inventory()

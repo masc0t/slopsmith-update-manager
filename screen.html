@@ -85,6 +85,23 @@
 
     <!-- Browse tab -->
     <div id="updater-pane-browse" class="hidden">
+        <!-- Install from GitHub URL (plugins not in the registry) -->
+        <div class="bg-dark-700/40 rounded-xl p-4 mb-4">
+            <h3 class="text-sm font-semibold text-gray-300 mb-1">Install from GitHub URL</h3>
+            <p class="text-xs text-gray-500 mb-3">Install any slopsmith plugin from a public GitHub repo, even if it isn&rsquo;t listed in the registry below.</p>
+            <div class="flex items-center gap-2 flex-wrap">
+                <input type="text" id="updater-install-url" placeholder="https://github.com/owner/slopsmith-plugin-foo"
+                    onkeydown="if(event.key==='Enter')updaterInstallFromUrl()"
+                    class="flex-1 min-w-0 bg-dark-700 border border-gray-800 rounded-xl px-4 py-2 text-sm text-gray-300 placeholder-gray-600 focus:border-accent/50 outline-none">
+                <input type="text" id="updater-install-dirname" placeholder="dir name (optional)"
+                    onkeydown="if(event.key==='Enter')updaterInstallFromUrl()"
+                    class="w-44 bg-dark-700 border border-gray-800 rounded-xl px-4 py-2 text-sm text-gray-300 placeholder-gray-600 focus:border-accent/50 outline-none">
+                <button onclick="updaterInstallFromUrl()" id="updater-install-url-btn"
+                    class="bg-accent hover:bg-accent/80 px-4 py-2 rounded-xl text-sm text-white font-semibold transition whitespace-nowrap">Install</button>
+            </div>
+            <div id="updater-install-url-msg" class="hidden mt-2 text-xs"></div>
+        </div>
+
         <div class="flex items-center gap-3 mb-4 flex-wrap">
             <input type="text" id="updater-browse-filter" placeholder="Filter plugins..."
                 oninput="updaterRenderBrowse()"

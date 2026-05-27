@@ -20,6 +20,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.12.0
+- **Install plugins that aren't in the registry** — the Browse tab now has an *Install from GitHub URL* box. Paste any public GitHub repo (`https://github.com/owner/repo`) and Install; the optional dir-name field lets you override where it lands, otherwise the directory is derived from the repo slug (the conventional `slopsmith[-plugin]-` prefix is stripped and dashes become underscores). Uses the same zip-download install path as registry installs — **no `git` CLI required**.
+
 ### v1.11.5
 - **Registry browse: match bundled plugins by repo slug, not just dirname** — extends the v1.11.4 fix. The README install command's clone-target dirname matches neither the bundled directory name nor the manifest id for some plugins (e.g. **Tab View** — dir/id `tabview`, registry dirname `tab_view`; **Guitar Theory Lab** — dir/id `guitar_theory`, registry dirname `guitar-theory-lab`), so those rows still showed an "Install" button or green "Installed" instead of "Bundled". `/registry` now matches each row against the on-disk directory name, the manifest id, **and** the GitHub repo slug (`slopsmith-plugin-<slug>`, which by convention equals the bundled directory name), with `-`/`_`/case folded. This catches every bundled plugin regardless of the README's dirname choice.
 

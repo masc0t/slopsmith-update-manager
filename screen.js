@@ -1097,6 +1097,63 @@
         }
     };
 
+    // Install a plugin from an arbitrary GitHub URL — covers plugins not
+    // listed in the registry. `dirname` is optional; the server derives
+    // one from the repo slug when it's blank.
+    window.updaterInstallFromUrl = async function () {
+        const urlEl = document.getElementById('updater-install-url');
+        const dirEl = document.getElementById('updater-install-dirname');
+        const btn = document.getElementById('updater-install-url-btn');
+        const msg = document.getElementById('updater-install-url-msg');
+        const url = (urlEl.value || '').trim();
+        const dirname = (dirEl.value || '').trim();
+        if (!url) {
+            showInstallMsg(msg, 'Enter a GitHub repo URL.', false);
+            urlEl.focus();
+            return;
+        }
+        btn.disabled = true;
+        btn.textContent = 'Installing...';
+        msg.classList.add('hidden');
+        try {
+            const payload = { url };
+            if (dirname) payload.dirname = dirname;
+            const resp = await fetch(API + '/install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await resp.json();
+            if (data.ok) {
+                showInstallMsg(msg, 'Installed ' + (data.repo || url) + ' into "' + data.dirname + '". Restart to load it.', true);
+                urlEl.value = '';
+                dirEl.value = '';
+                localStorage.setItem(RESTART_KEY, '1');
+                document.getElementById('updater-restart-banner').classList.remove('hidden');
+                // Refresh the cached plugin list so the Updates tab and the
+                // registry's Installed badges reflect the new install.
+                try {
+                    const pRes = await fetch('/api/plugins');
+                    plugins = await pRes.json();
+                } catch (e) { /* ignore */ }
+                if (registry.length) updaterRenderBrowse();
+            } else {
+                showInstallMsg(msg, data.error || 'Install failed.', false);
+            }
+        } catch (e) {
+            showInstallMsg(msg, 'Error: ' + e.message, false);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Install';
+        }
+    };
+
+    function showInstallMsg(el, text, success) {
+        el.textContent = text;
+        el.className = 'mt-2 text-xs ' + (success ? 'text-green-400' : 'text-red-400');
+        el.classList.remove('hidden');
+    }
+
     // ── Restart banner ─────────────────────────────────────────────────
     window.updaterCopyCmd = async function () {
         const btn = document.getElementById('updater-copy-btn');
