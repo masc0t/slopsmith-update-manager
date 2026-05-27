@@ -1987,10 +1987,11 @@ def setup(app, context):
         # clone-target dirname; ad-hoc "install from URL" of a plugin
         # that isn't in the registry omits it, so derive one from the
         # repo slug — strip the conventional slopsmith[-plugin]- prefix
-        # and normalise to the snake_case shape bundled plugin dirs use.
+        # and normalise to the lowercase snake_case shape bundled plugin
+        # dirs use (e.g. repo `SlopSniffer` -> dir `slopsniffer`).
         dirname = (body.get("dirname") or "").strip()
         if not dirname:
-            dirname = _repo_slug(repo).replace("-", "_")
+            dirname = _repo_slug(repo).replace("-", "_").lower()
         if not SLUG_RE.match(dirname):
             return {"error": "Invalid dirname"}
         target = PLUGINS_DIR / dirname

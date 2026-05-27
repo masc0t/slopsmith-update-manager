@@ -552,8 +552,8 @@ def test_install_invalidates_inventory_cache(client, fake_dirs, monkeypatch):
 
 def test_install_without_dirname_derives_from_repo_slug(client, fake_dirs, monkeypatch):
     """Installing a not-in-registry plugin can omit dirname; the server
-    derives a snake_case dir from the repo slug (slopsmith[-plugin]-
-    prefix stripped, dashes → underscores)."""
+    derives a lowercase snake_case dir from the repo slug (slopsmith
+    [-plugin]- prefix stripped, dashes → underscores, lowercased)."""
     monkeypatch.setattr(routes, "_default_branch", lambda o, r: "main")
     monkeypatch.setattr(routes, "_latest_sha", lambda o, r, b: "deadbeef" * 5)
     monkeypatch.setattr(routes, "_download_and_replace",
@@ -562,7 +562,7 @@ def test_install_without_dirname_derives_from_repo_slug(client, fake_dirs, monke
 
     r = client.post(
         "/api/plugins/update_manager/install",
-        json={"url": "https://github.com/someone/slopsmith-plugin-cool-thing"},
+        json={"url": "https://github.com/someone/slopsmith-plugin-Cool-Thing"},
     )
     body = r.json()
     assert body.get("ok") is True, body
