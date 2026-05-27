@@ -38,6 +38,11 @@ def fake_dirs(tmp_path, monkeypatch):
     remote_cache_file = cache_dir / "remote_cache.json"
 
     monkeypatch.setattr(routes, "PLUGINS_DIR", plugins_dir)
+    # On desktop BUNDLED_PLUGINS_DIR points at the read-only app-bundle
+    # plugins root; on Docker / source checkouts it equals PLUGINS_DIR.
+    # Pin it to the same tmp here so the inventory doesn't leak the
+    # dev tree's real plugins into the test universe.
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", plugins_dir)
     monkeypatch.setattr(routes, "CACHE_DIR", cache_dir)
     monkeypatch.setattr(routes, "REMOTE_CACHE_FILE", remote_cache_file)
     # Reset the inventory + remote caches so tests start from a clean slate.
@@ -561,3 +566,76 @@ def test_apply_update_invalidates_inventory_cache(client, fake_dirs, monkeypatch
     body = r.json()
     assert body.get("ok") is True, body
     assert routes._inventory_cache is None
+
+
+# ── Bundled-plugins-dir inventory (regression for the v1.9.0 desktop bug) ──
+
+
+def test_installed_plugin_dirs_scans_bundled_dir_on_desktop(tmp_path, monkeypatch):
+    """On desktop, PLUGINS_DIR is the user-writable plugins dir; the
+    update_manager itself lives under BUNDLED_PLUGINS_DIR (the read-only
+    app-bundle dir). Both must appear in the inventory so clicking
+    Check on the update_manager row doesn't return "Plugin not found".
+    """
+    user_dir = tmp_path / "user_plugins"
+    bundled_dir = tmp_path / "bundled_plugins"
+    user_dir.mkdir()
+    bundled_dir.mkdir()
+    _write_plugin(user_dir, "midi_capo")
+    _write_plugin(bundled_dir, "update_manager")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
+
+    dirs = routes._installed_plugin_dirs()
+    assert set(dirs.keys()) == {"midi_capo", "update_manager"}
+    assert dirs["midi_capo"].parent.resolve() == user_dir.resolve()
+    assert dirs["update_manager"].parent.resolve() == bundled_dir.resolve()
+
+
+def test_installed_plugin_dirs_user_wins_on_id_collision(tmp_path, monkeypatch):
+    """When the same plugin id exists in both dirs (user installed an
+    external copy on top of a bundled one), the user-dir entry wins —
+    matches slopsmith core's "user override beats bundled" load order.
+    """
+    user_dir = tmp_path / "user_plugins"
+    bundled_dir = tmp_path / "bundled_plugins"
+    user_dir.mkdir()
+    bundled_dir.mkdir()
+    _write_plugin(user_dir, "shared", name="user-copy")
+    _write_plugin(bundled_dir, "shared", name="bundled-copy")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
+
+    dirs = routes._installed_plugin_dirs()
+    assert dirs["shared"].parent.resolve() == user_dir.resolve()
+
+
+def test_is_bundled_flags_desktop_bundle_path(tmp_path, monkeypatch):
+    """Plugins under BUNDLED_PLUGINS_DIR (when distinct from PLUGINS_DIR)
+    are treated as bundled even without a manifest flag, so the UI hides
+    Check/Update/Uninstall and the server refuses write operations.
+    """
+    user_dir = tmp_path / "user_plugins"
+    bundled_dir = tmp_path / "bundled_plugins"
+    user_dir.mkdir()
+    bundled_dir.mkdir()
+    user_plugin = _write_plugin(user_dir, "midi_capo")
+    bundled_plugin = _write_plugin(bundled_dir, "update_manager")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
+
+    assert routes._is_bundled(bundled_plugin) is True
+    assert routes._is_bundled(user_plugin) is False
+
+
+def test_is_bundled_does_not_flag_on_docker(tmp_path, monkeypatch):
+    """On Docker / source checkouts the two dirs are equal; plugins
+    living there are NOT bundled by path (only by manifest flag).
+    """
+    shared = tmp_path / "plugins"
+    shared.mkdir()
+    p = _write_plugin(shared, "midi_capo")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", shared)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", shared)
+
+    assert routes._is_bundled(p) is False
