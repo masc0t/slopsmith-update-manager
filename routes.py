@@ -1540,12 +1540,8 @@ def _validate_relpath(relpath: str) -> bool:
     parts = relpath.replace("\\", "/").split("/")
     if ".." in parts:
         return False
-    if any(p.startswith(".") and p not in (".", "") for p in parts):
-        # Reject leading-dot segments (mirrors server_files semantics —
-        # CLAUDE.md says "no leading dots" for diagnostics).
-        # Note: this is stricter than server_files which allows them,
-        # but inventory is read-only so we err safe.
-        pass  # actually allow — server_files does. Keep parity.
+    # Leading-dot segments are intentionally allowed — parity with
+    # settings.server_files, which permits them.
     return True
 
 
@@ -1687,15 +1683,26 @@ def _build_inventory() -> dict:
         "description": "Cached GitHub API responses used to stay under the rate limit.",
     })
 
-    # Per-plugin breakdown.
+    # Per-plugin breakdown. The reported total covers both the plugin's
+    # source directory (under PLUGINS_DIR) AND any declared user-data
+    # paths under config_dir, so a plugin with no declared server_files
+    # still shows its on-disk footprint rather than a misleading 0.
     plugins_out: list[dict] = []
     for pid, pdir in _installed_plugin_dirs().items():
         paths = _plugin_declared_paths(pdir, Path(config_dir)) if config_dir else []
-        # Aggregate size across declared paths (some may not yet exist
-        # — that's fine, they sum 0). Also include the plugin's own
-        # source directory under PLUGINS_DIR so the user can find it.
-        size = sum(_path_size(p) for p in paths)
+        source_size = _path_size(pdir)
+        data_size = sum(_path_size(p) for p in paths)
         existing = [str(p) for p in paths if p.exists()]
+        # Pick the largest existing declared path as the open target —
+        # users hitting Open on a plugin row that has heavy data files
+        # under config_dir probably want to land there, not in the
+        # source tree. Fall back to the source dir when nothing data-
+        # ward exists.
+        existing_paths = [p for p in paths if p.exists()]
+        if existing_paths:
+            open_path = max(existing_paths, key=_path_size)
+        else:
+            open_path = pdir
         manifest = pdir / "plugin.json"
         name = pid
         try:
@@ -1708,9 +1715,12 @@ def _build_inventory() -> dict:
             "id": pid,
             "name": name,
             "source_path": str(pdir),
+            "open_path": str(open_path),
             "declared_paths": [str(p) for p in paths],
             "existing_paths": existing,
-            "size_bytes": size,
+            "source_size_bytes": source_size,
+            "data_size_bytes": data_size,
+            "size_bytes": source_size + data_size,
             "declares_server_files": len(paths) > 0,
         })
 
@@ -1772,15 +1782,19 @@ def _resolve_open_target(target: str) -> Path | None:
         if b.get("key") == target:
             p = Path(b["path"])
             return p if p.exists() else None
-    # plugin:<id> — open the plugin's source directory.
+    # plugin:<id> — open the plugin's largest existing data path, or
+    # fall back to its source directory (see _build_inventory).
     if target.startswith("plugin:"):
         pid = target[len("plugin:"):]
         if not SLUG_RE.match(pid):
             return None
         for p_entry in inv.get("plugins", []):
             if p_entry.get("id") == pid:
-                src = Path(p_entry["source_path"])
-                return src if src.exists() else None
+                op = p_entry.get("open_path") or p_entry.get("source_path")
+                if not op:
+                    return None
+                p = Path(op)
+                return p if p.exists() else None
     return None
 
 
@@ -1882,6 +1896,7 @@ def setup(app, context):
                 return {"error": "Could not resolve latest commit"}
             _download_and_replace(owner, repo, branch, target, preserve_git=False)
             _write_marker(target, owner, repo, branch, sha)
+            _invalidate_inventory()
             return {
                 "ok": True, "dirname": dirname, "branch": branch,
                 "sha": sha[:7], "repo": f"{owner}/{repo}",
@@ -2190,6 +2205,7 @@ def setup(app, context):
             preserve_git = (target / ".git").exists()
             _download_and_replace(owner, repo, ref, target, preserve_git=preserve_git)
             _write_marker(target, owner, repo, resolved_branch, sha)
+            _invalidate_inventory()
             return {"ok": True, "sha": sha[:7], "branch": resolved_branch, "ref": ref}
         except urllib.error.HTTPError as e:
             return {"error": f"HTTP {e.code}: {e.reason}"}
@@ -2389,7 +2405,7 @@ def setup(app, context):
         cache_files manifest opt-in in v1; the Open button is the
         escape hatch for users who want to reclaim plugin bytes).
         """
-        target = (body or {}).get("target") if isinstance(body, dict) else None
+        target = body.get("target")
         if not isinstance(target, str):
             return {"error": "Missing target"}
         if target == "sloppak_cache":
@@ -2442,7 +2458,7 @@ def setup(app, context):
         are NEVER accepted. Anything not in the inventory's known set
         is rejected with 400.
         """
-        target = (body or {}).get("target") if isinstance(body, dict) else None
+        target = body.get("target")
         if not isinstance(target, str) or not target:
             return {"error": "Missing target"}
         if not IS_DESKTOP:
@@ -2474,6 +2490,7 @@ def setup(app, context):
             }
         try:
             shutil.rmtree(target)
+            _invalidate_inventory()
             return {"ok": True}
         except Exception as e:
             return {"error": str(e)}

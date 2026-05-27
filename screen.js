@@ -1215,6 +1215,20 @@
         return (i === 0 ? v.toFixed(0) : v.toFixed(v >= 10 ? 1 : 2)) + ' ' + units[i];
     }
 
+    // Describe a per-plugin row's size composition. Total = source dir
+    // under PLUGINS_DIR + any declared user-data paths under config_dir;
+    // call out the data contribution explicitly when a plugin declares
+    // server_files so the user knows what the number covers.
+    function pluginSizeDescription(p) {
+        const src = formatBytes(p.source_size_bytes || 0);
+        if (p.declares_server_files) {
+            const data = formatBytes(p.data_size_bytes || 0);
+            const n = p.declared_paths.length;
+            return `Source ${src} + ${data} across ${n} declared user-data path${n === 1 ? '' : 's'} under your config dir.`;
+        }
+        return `Source ${src}. No declared user-data paths.`;
+    }
+
     function updaterRenderStorage() {
         const content = document.getElementById('updater-storage-content');
         if (!content || !storageData) return;
@@ -1235,7 +1249,7 @@
         })).join('');
 
         const pluginRowsHtml = plugins.length === 0
-            ? `<div class="text-gray-500 text-xs py-4 text-center">No installed plugins declare any user-data paths.</div>`
+            ? `<div class="text-gray-500 text-xs py-4 text-center">No installed plugins.</div>`
             : plugins.map(p => storageRowHtml({
                 key: 'plugin:' + p.id,
                 label: p.name,
@@ -1243,9 +1257,7 @@
                 size: p.size_bytes,
                 exists: true,
                 clearable: false,
-                description: p.declares_server_files
-                    ? `Declares ${p.declared_paths.length} user-data path${p.declared_paths.length === 1 ? '' : 's'} under your config dir.`
-                    : `No declared user-data paths. Size shown is the plugin&rsquo;s source directory only.`,
+                description: pluginSizeDescription(p),
                 canOpen,
             })).join('');
 
