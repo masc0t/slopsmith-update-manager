@@ -487,7 +487,7 @@
 
             let statusHtml, actionHtml, rowBg, localStr = '', remoteStr = '';
             const isPendingRestart = _pendingRestart.has(p.id);
-            if (isPendingRestart && !isBundled) {
+            if (isPendingRestart) {
                 // Update was applied but the new code isn't loaded
                 // until the user restarts. Override "Update available"
                 // (which the bulk endpoint may still report until the
@@ -498,13 +498,31 @@
                     <div class="text-[10px] text-gray-600 mt-0.5">Click “Restart now” above</div>`;
                 actionHtml = `<span class="text-gray-600 text-xs">—</span>`;
             } else if (isBundled) {
-                rowBg = 'bg-dark-800/30';
-                statusHtml = `<span class="text-sky-400 font-semibold text-xs inline-flex items-center gap-1">
+                // Bundled plugins can be updated now (the update lands as
+                // a writable override copy on desktop, or in place on
+                // docker/source). Show the Update action when one is
+                // available; otherwise badge it as Bundled. Check /
+                // Versions are still offered below the status.
+                const bundledChip = `<span class="text-sky-400 font-semibold text-xs inline-flex items-center gap-1">
                         <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
                         Bundled
-                    </span>
-                    <div class="text-[10px] text-gray-600 mt-0.5">Managed by slopsmith core</div>`;
-                actionHtml = `<span class="text-gray-700 text-xs" title="Bundled plugins update with slopsmith itself">—</span>`;
+                    </span>`;
+                if (u) {
+                    rowBg = 'bg-dark-700/40';
+                    localStr = u.local;
+                    remoteStr = u.remote;
+                    statusHtml = `<span class="text-amber-400 font-semibold text-xs">Update available</span>
+                        <div class="text-[10px] text-gray-600 mt-0.5">Bundled · ${esc(u.repo)} · ${esc(u.branch)}</div>`;
+                    actionHtml = `<button data-plugin-id="${esc(p.id)}" onclick="updaterUpdate(this)"
+                        class="bg-accent/20 hover:bg-accent/30 text-accent px-3 py-1 rounded-lg text-xs transition">Update</button>`;
+                } else {
+                    rowBg = 'bg-dark-800/30';
+                    const sub = (src && src.url)
+                        ? 'Up to date · updatable from GitHub'
+                        : 'Managed by slopsmith core';
+                    statusHtml = bundledChip + `<div class="text-[10px] text-gray-600 mt-0.5">${sub}</div>`;
+                    actionHtml = `<span class="text-gray-700 text-xs">—</span>`;
+                }
             } else if (isExcluded) {
                 rowBg = 'bg-dark-900/40 opacity-60';
                 statusHtml = `<span class="text-gray-500 font-semibold text-xs">Excluded</span>
@@ -564,7 +582,7 @@
                     class="text-gray-600 hover:text-red-400 text-xs transition">Uninstall</button>`;
             }
 
-            const exclCheckbox = (isSelf || isBundled)
+            const exclCheckbox = isSelf
                 ? '<span class="text-gray-700 text-xs">—</span>'
                 : `<label class="inline-flex items-center justify-center cursor-pointer" title="Exclude this plugin from update checks and bulk updates">
                     <input type="checkbox" data-plugin-id="${esc(p.id)}" onchange="updaterToggleExclude(this)"
@@ -587,25 +605,25 @@
             // is mid-self-update flow (avoids surprise during pending
             // restart). The button is plain text so it doesn't compete
             // visually with the primary Update / Uninstall action.
-            const canPickVersion = !isBundled && !isExcluded && !!(src && src.url);
+            const canPickVersion = !isExcluded && !!(src && src.url);
             const versionsBtn = canPickVersion
                 ? `<button data-plugin-id="${esc(p.id)}" onclick="updaterShowVersions(this)"
                         class="text-gray-500 hover:text-accent text-xs transition"
                         title="Pin this plugin to a specific version (upgrade or downgrade)">Versions</button>`
                 : '';
 
-            // Per-row recheck. ALWAYS shown for non-bundled (external)
-            // plugins — the backend's /check/{id} endpoint does the full
-            // check, force-refreshes the registry if the source couldn't
-            // be resolved on the cold pass, and never depends on the
-            // bulk pass having succeeded. (The bulk /updates pass makes
-            // zero api.github.com calls, so the entire 60/hour budget is
+            // Per-row recheck, shown for every plugin (bundled included).
+            // The backend's /check/{id} endpoint does the full check,
+            // force-refreshes the registry if the source couldn't be
+            // resolved on the cold pass, and never depends on the bulk
+            // pass having succeeded. (The bulk /updates pass makes zero
+            // api.github.com calls, so the entire 60/hour budget is
             // available for these on-demand single-plugin checks — an
             // end user can always re-check and update any individual
-            // external plugin, even right after a cold first run.)
-            // Bundled plugins are managed by slopsmith core; no Check
-            // button for them.
-            const canRecheck = !isBundled;
+            // plugin, even right after a cold first run.) Bundled plugins
+            // resolve their upstream the same way and can report (and
+            // apply) updates, so they get the Check button too.
+            const canRecheck = true;
             const checking = _inflightChecks.has(p.id);
             // Excluded rows skip the GitHub round-trip on the backend
             // and only re-sync local state — phrase the tooltip

@@ -297,6 +297,41 @@ def _is_bundled(plugin_dir: Path) -> bool:
         return False
 
 
+def _is_readonly_bundled(plugin_dir: Path) -> bool:
+    """True if `plugin_dir` lives in the read-only app-bundle plugins dir.
+
+    On slopsmith-desktop BUNDLED_PLUGINS_DIR (under Program Files / .app)
+    is distinct from the writable user-data PLUGINS_DIR and is read-only
+    at runtime, so a plugin sitting there can't be updated in place.
+    Manifest `bundled: true` in a writable checkout (docker/source) does
+    NOT count here — those CAN be updated in place. Used to decide
+    whether an update writes over the existing dir or lays down a
+    writable override copy under PLUGINS_DIR (see _write_target).
+    """
+    try:
+        return (
+            BUNDLED_PLUGINS_DIR.resolve() != PLUGINS_DIR.resolve()
+            and plugin_dir.resolve().parent == BUNDLED_PLUGINS_DIR.resolve()
+        )
+    except OSError:
+        return False
+
+
+def _write_target(plugin_dir: Path) -> Path:
+    """Return the directory an update should be written to.
+
+    For a plugin in the read-only desktop bundle dir, that's a writable
+    override copy under PLUGINS_DIR (same dir name) — slopsmith core
+    loads the user-dir copy in preference to the bundled one, so this
+    effectively updates the plugin the user sees. For everything else
+    (external plugins, and manifest-`bundled: true` plugins in a
+    writable checkout) it's the plugin's own directory, updated in place.
+    """
+    if _is_readonly_bundled(plugin_dir):
+        return PLUGINS_DIR / plugin_dir.name
+    return plugin_dir
+
+
 def _read_marker(plugin_dir: Path) -> dict | None:
     f = plugin_dir / MARKER
     if not f.exists():
@@ -2032,10 +2067,14 @@ def setup(app, context):
         # phase 2 to fan out.
         to_check: list[tuple] = []
         for name, p in _installed_plugin_dirs().items():
-            if _is_bundled(p):
+            # Bundled plugins are no longer skipped — they can be updated
+            # now. Record the flag for the UI badge, then resolve + check
+            # them like any other plugin. A bundled plugin whose upstream
+            # can't be resolved simply contributes no update entry (it
+            # still shows its "Bundled" badge).
+            is_bundled = _is_bundled(p)
+            if is_bundled:
                 bundled.append(name)
-                sources[name] = {"bundled": True}
-                continue
             info = _resolve_source(p)
             if info and info["owner"]:
                 sources[name] = {
@@ -2045,6 +2084,10 @@ def setup(app, context):
                     "source": info["source"],
                     "local_version": info.get("local_version"),
                 }
+                if is_bundled:
+                    sources[name]["bundled"] = True
+            elif is_bundled:
+                sources[name] = {"bundled": True}
             if name in excluded:
                 continue
             if not info:
@@ -2112,31 +2155,27 @@ def setup(app, context):
 
         # Mirror Phase 1 (serial metadata) for this single plugin so the
         # response shape lines up with bulk `/updates`'s per-plugin slice.
-        source: dict = {}
-        info = None
-        if bundled:
-            source = {"bundled": True}
-        else:
-            info = _resolve_source(p)
-            if not (info and info["owner"]):
-                # First resolution attempt found nothing — retry with a
-                # forced registry refresh in case the cold-pass fetch
-                # failed transiently.
-                info = _resolve_source(p, force_registry=True)
-            if info and info["owner"]:
-                source = {
-                    "repo": f"{info['owner']}/{info['repo']}",
-                    "url": f"https://github.com/{info['owner']}/{info['repo']}",
-                    "branch": info["branch"],
-                    "source": info["source"],
-                    "local_version": info.get("local_version"),
-                }
+        # Bundled plugins are checked too (they CAN be updated now); the
+        # `bundled` flag stays in the source dict for the UI badge.
+        source: dict = {"bundled": True} if bundled else {}
+        info = _resolve_source(p)
+        if not (info and info["owner"]):
+            # First resolution attempt found nothing — retry with a
+            # forced registry refresh in case the cold-pass fetch
+            # failed transiently.
+            info = _resolve_source(p, force_registry=True)
+        if info and info["owner"]:
+            source.update({
+                "repo": f"{info['owner']}/{info['repo']}",
+                "url": f"https://github.com/{info['owner']}/{info['repo']}",
+                "branch": info["branch"],
+                "source": info["source"],
+                "local_version": info.get("local_version"),
+            })
 
         result_entry = None
         error_entry = None
-        if bundled:
-            pass  # bundled plugins are managed by core; nothing to check
-        elif plugin_id in excluded_set:
+        if plugin_id in excluded_set:
             pass  # excluded — just re-sync the excluded/bundled flags
         elif info:
             # Full check (bulk=False) — allowed to spend api.github.com calls.
@@ -2208,11 +2247,6 @@ def setup(app, context):
         target = _installed_plugin_dirs().get(plugin_id)
         if not target or not target.is_dir():
             return {"error": "Plugin not found"}
-        if _is_bundled(target):
-            return {
-                "error": "Bundled with slopsmith core; version pinning not supported.",
-                "bundled": True,
-            }
         info = _resolve_source(target)
         if not info:
             return {"error": "Plugin source unknown (no marker, no .git/config)"}
@@ -2248,13 +2282,21 @@ def setup(app, context):
         target = _installed_plugin_dirs().get(plugin_id)
         if not target or not target.is_dir():
             return {"error": "Plugin not found"}
-        if _is_bundled(target):
-            return {
-                "error": "Bundled with slopsmith core; updates ship with the slopsmith app itself.",
-                "bundled": True,
-            }
         info = _resolve_source(target)
         if not info:
+            # Bundled plugins commonly ship as plain directories (no
+            # marker, no .git) — without a resolvable upstream there's
+            # nothing to pull from. Give a bundled-aware hint.
+            if _is_bundled(target):
+                return {
+                    "error": (
+                        "Bundled plugin's upstream repo couldn't be resolved "
+                        "(no install marker, no .git, not in the registry). "
+                        "Install it from its GitHub URL via the Browse tab to "
+                        "record its source, then updates will work."
+                    ),
+                    "bundled": True,
+                }
             return {"error": "Plugin source unknown (no marker, no .git/config)"}
         # Optional `ref` in the JSON body lets the caller pin to a
         # specific tag or sha (upgrade or downgrade). Body parsing is
@@ -2300,21 +2342,32 @@ def setup(app, context):
                 resolved_branch = branch
             if plugin_id == "update_manager":
                 return _self_update(owner, repo, ref, sha)
+            # A plugin sitting in the read-only desktop bundle dir can't
+            # be written in place; lay down a writable override copy
+            # under PLUGINS_DIR (slopsmith loads the user-dir copy in
+            # preference). Everything else updates in its own directory.
+            write_target = _write_target(target)
+            overrode_bundled = write_target != target
             # preserve_git is gated on the **structural** presence of a
-            # .git entry, NOT on info["source"]. After freshness-based
-            # source selection in _resolve_source, a git-cloned plugin
-            # with a recently-rewritten marker returns source="zip" —
-            # using that here would drop the live .git/ directory (or
-            # gitdir-file in the worktree / submodule case) and lose
-            # the user's clone. Mirror _download_and_replace's own
-            # check (`.exists()`) so worktrees and submodules — which
-            # store `.git` as a file containing `gitdir: …` rather
-            # than a directory — are also preserved.
-            preserve_git = (target / ".git").exists()
-            _download_and_replace(owner, repo, ref, target, preserve_git=preserve_git)
-            _write_marker(target, owner, repo, resolved_branch, sha)
+            # .git entry in the WRITE target, NOT on info["source"].
+            # After freshness-based source selection in _resolve_source,
+            # a git-cloned plugin with a recently-rewritten marker
+            # returns source="zip" — using that here would drop the live
+            # .git/ directory (or gitdir-file in the worktree / submodule
+            # case) and lose the user's clone. Mirror
+            # _download_and_replace's own check (`.exists()`) so
+            # worktrees and submodules — which store `.git` as a file
+            # containing `gitdir: …` rather than a directory — are also
+            # preserved. (For a fresh bundled-override copy the target
+            # doesn't exist yet, so this is False, which is correct.)
+            preserve_git = (write_target / ".git").exists()
+            _download_and_replace(owner, repo, ref, write_target, preserve_git=preserve_git)
+            _write_marker(write_target, owner, repo, resolved_branch, sha)
             _invalidate_inventory()
-            return {"ok": True, "sha": sha[:7], "branch": resolved_branch, "ref": ref}
+            return {
+                "ok": True, "sha": sha[:7], "branch": resolved_branch, "ref": ref,
+                "overrode_bundled": overrode_bundled,
+            }
         except urllib.error.HTTPError as e:
             return {"error": f"HTTP {e.code}: {e.reason}"}
         except Exception as e:
