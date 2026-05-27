@@ -640,8 +640,10 @@ def test_installed_plugin_dirs_user_wins_on_id_collision(tmp_path, monkeypatch):
 
 def test_is_bundled_flags_desktop_bundle_path(tmp_path, monkeypatch):
     """Plugins under BUNDLED_PLUGINS_DIR (when distinct from PLUGINS_DIR)
-    are treated as bundled even without a manifest flag, so the UI hides
-    Check/Update/Uninstall and the server refuses write operations.
+    are treated as bundled even without a manifest flag. Bundled plugins
+    can still be updated (the write is redirected to PLUGINS_DIR via
+    _write_target); the flag only drives the "Bundled" UI badge and the
+    write-target redirection.
     """
     user_dir = tmp_path / "user_plugins"
     bundled_dir = tmp_path / "bundled_plugins"
@@ -667,6 +669,99 @@ def test_is_bundled_does_not_flag_on_docker(tmp_path, monkeypatch):
     monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", shared)
 
     assert routes._is_bundled(p) is False
+
+
+# ── Bundled plugins are updatable (write-target redirection) ──────────
+
+
+def test_write_target_redirects_readonly_bundle_to_plugins_dir(tmp_path, monkeypatch):
+    """A plugin in the read-only desktop bundle dir is written to a
+    writable override copy under PLUGINS_DIR (same dir name)."""
+    user_dir = tmp_path / "user_plugins"
+    bundled_dir = tmp_path / "bundled_plugins"
+    user_dir.mkdir()
+    bundled_dir.mkdir()
+    bundled_plugin = _write_plugin(bundled_dir, "midi_capo")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
+
+    assert routes._is_readonly_bundled(bundled_plugin) is True
+    assert routes._write_target(bundled_plugin) == user_dir / "midi_capo"
+
+
+def test_write_target_updates_in_place_on_docker(tmp_path, monkeypatch):
+    """When the bundle dir equals PLUGINS_DIR (docker/source), the write
+    target is the plugin's own directory — updated in place."""
+    shared = tmp_path / "plugins"
+    shared.mkdir()
+    p = _write_plugin(shared, "midi_capo")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", shared)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", shared)
+
+    assert routes._is_readonly_bundled(p) is False
+    assert routes._write_target(p) == p
+
+
+def test_update_bundled_in_place_on_docker(client, fake_dirs, monkeypatch):
+    """A manifest-`bundled: true` plugin in a writable checkout updates
+    in place (no longer blocked with a 'bundled' error)."""
+    pdir = fake_dirs["plugins"] / "bundle_me"
+    pdir.mkdir()
+    (pdir / "plugin.json").write_text(
+        json.dumps({"id": "bundle_me", "name": "Bundle Me", "bundled": True}),
+        encoding="utf-8",
+    )
+    assert routes._is_bundled(pdir) is True
+
+    monkeypatch.setattr(routes, "_resolve_source",
+                        lambda t, **kw: {"owner": "foo", "repo": "bar", "branch": "main", "source": "registry"})
+    monkeypatch.setattr(routes, "_default_branch", lambda o, r: "main")
+    monkeypatch.setattr(routes, "_latest_sha", lambda o, r, b: "abc1234" * 5)
+    captured = {}
+    monkeypatch.setattr(routes, "_download_and_replace",
+                        lambda owner, repo, ref, target, preserve_git: captured.update(target=target))
+    monkeypatch.setattr(routes, "_write_marker", lambda *a, **kw: None)
+
+    r = client.post("/api/plugins/update_manager/update/bundle_me")
+    body = r.json()
+    assert body.get("ok") is True, body
+    assert body.get("overrode_bundled") is False, body
+    assert captured["target"] == pdir
+
+
+def test_update_readonly_bundled_writes_override_copy(tmp_path, monkeypatch):
+    """A plugin in the read-only desktop bundle dir updates by laying
+    down a writable override copy under PLUGINS_DIR."""
+    user_dir = tmp_path / "user_plugins"
+    bundled_dir = tmp_path / "bundled_plugins"
+    user_dir.mkdir()
+    bundled_dir.mkdir()
+    _write_plugin(bundled_dir, "midi_capo")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
+    monkeypatch.setattr(routes, "CACHE_DIR", tmp_path / "cache")
+
+    monkeypatch.setattr(routes, "_resolve_source",
+                        lambda t, **kw: {"owner": "foo", "repo": "bar", "branch": "main", "source": "registry"})
+    monkeypatch.setattr(routes, "_default_branch", lambda o, r: "main")
+    monkeypatch.setattr(routes, "_latest_sha", lambda o, r, b: "abc1234" * 5)
+    captured = {}
+    monkeypatch.setattr(routes, "_download_and_replace",
+                        lambda owner, repo, ref, target, preserve_git: captured.update(target=target))
+    monkeypatch.setattr(routes, "_write_marker", lambda *a, **kw: None)
+
+    app = FastAPI()
+    routes.setup(app, {
+        "get_dlc_dir": lambda: tmp_path, "get_sloppak_cache_dir": lambda: tmp_path,
+        "config_dir": tmp_path, "extract_meta": lambda *a, **k: None, "meta_db": None,
+        "load_sibling": lambda n: None, "log": __import__("logging").getLogger("test"),
+    })
+    with TestClient(app) as c:
+        r = c.post("/api/plugins/update_manager/update/midi_capo")
+    body = r.json()
+    assert body.get("ok") is True, body
+    assert body.get("overrode_bundled") is True, body
+    assert captured["target"] == user_dir / "midi_capo"
 
 
 # ── _norm_key / _repo_slug ────────────────────────────────────────────

@@ -20,6 +20,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.13.0
+- **Bundled plugins are now updatable, including Update Manager itself** — bundled plugins were previously hard-blocked from Check / Update / Versions (status just read "Bundled · managed by slopsmith core"). They can now be updated whenever their upstream repo is resolvable. On Docker / source checkouts the update applies in place; on the desktop app — where bundled plugins live in a **read-only** app-bundle dir — the update lands as a writable override copy under the user plugins dir (which slopsmith loads in preference, leaving the bundled copy untouched). The "Bundled" badge stays as an informational marker, and the per-row Check / Versions / Exclude controls now work for bundled rows too. A bundled plugin whose upstream can't be resolved still shows the badge and a hint to install it from its GitHub URL via the Browse tab.
+
 ### v1.12.0
 - **Install plugins that aren't in the registry** — the Browse tab now has an *Install from GitHub URL* box. Paste any public GitHub repo (`https://github.com/owner/repo`) and Install; the optional dir-name field lets you override where it lands, otherwise the directory is derived from the repo slug (the conventional `slopsmith[-plugin]-` prefix is stripped and dashes become underscores). Uses the same zip-download install path as registry installs — **no `git` CLI required**.
 
