@@ -144,6 +144,39 @@ def _parse_repo_url(url: str):
     return m.group(1), m.group(2)
 
 
+def _norm_key(s: str) -> str:
+    """Canonicalize an identity token for cross-source matching.
+
+    Plugin directory names, manifest ids, and repo slugs all encode the
+    same identity in slightly different shapes (`tab_view` vs `tabview`,
+    `transpose-chords` vs `transpose_chords`). Lowercase and fold
+    `-`/`_` so the registry browser can match a registry entry to its
+    installed/bundled counterpart regardless of which shape each source
+    happened to use.
+    """
+    return (s or "").strip().lower().replace("-", "_")
+
+
+def _repo_slug(repo: str) -> str:
+    """Strip the conventional `slopsmith[-plugin]-` prefix off a repo name.
+
+    Registry rows carry a GitHub repo like `owner/slopsmith-plugin-tabview`.
+    The slug that remains (`tabview`) is, by ecosystem convention, the
+    plugin's bundled directory name — a far more reliable identity than the
+    README install command's clone-target dirname (which is hand-written and
+    routinely diverges from both the directory name and the manifest id,
+    e.g. dir `tabview`/id `tabview` shipped under registry dirname
+    `tab_view`). The longer `slopsmith-plugin-` prefix is checked first so
+    it wins over the bare `slopsmith-` fallback (which covers this repo,
+    `slopsmith-update-manager`).
+    """
+    name = (repo or "").split("/")[-1]
+    for prefix in ("slopsmith-plugin-", "slopsmith-"):
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
 def _parse_registry(md: str) -> list[dict]:
     """Parse the 'Available Plugins' table out of slopsmith's README."""
     entries = []
@@ -1911,31 +1944,38 @@ def setup(app, context):
             return {"error": f"Failed to fetch registry: {e}"}
         entries = _parse_registry(md)
         installed = _installed_plugin_dirs()  # manifest id -> dir Path
-        # Match registry dirnames against BOTH the on-disk directory name
-        # AND the manifest id. The registry README's install command often
-        # yields a dirname that equals the plugin's manifest id rather than
-        # the directory the bundle actually ships it in (e.g. dir `tabimport`
-        # / id `tab_import`, dir `practice` / id `practice_journal`). Keying
-        # only on `p.name` made those registry rows fall through to a plain
-        # green "Installed" instead of "Bundled", because the frontend's own
-        # fallback (`installedSet.has(r.dirname)`) matches against manifest
-        # ids and flips `installed` True while `overrides_bundled` stayed
-        # False. Including ids here keeps the two flags consistent.
-        installed_dirs = {p.name for p in installed.values()} | set(installed.keys())
-        bundled_dirs = set()
+        # Match each registry row to an installed plugin by THREE identity
+        # tokens, normalized via _norm_key so `-`/`_` and case don't matter:
+        #   1. the on-disk directory name (`p.name`),
+        #   2. the manifest id, and
+        #   3. the registry repo slug (`slopsmith-plugin-<slug>`).
+        # The README install command's clone-target dirname is hand-written
+        # and routinely matches NONE of the above for bundled plugins — e.g.
+        # Tab View (dir `tabview`, id `tabview`) ships under registry dirname
+        # `tab_view`, and Guitar Theory Lab (dir/id `guitar_theory`) under
+        # `guitar-theory-lab`. Matching only on dirname (or dirname+id) left
+        # those rows showing a green "Installed" — or worse, an "Install"
+        # button — instead of "Bundled". The repo slug is the stable
+        # identity: by ecosystem convention it equals the bundled directory
+        # name, so matching it against installed dir names + ids catches
+        # every bundled plugin regardless of the README's dirname choice.
+        installed_keys = set()
+        bundled_keys = set()
         for pid, p in installed.items():
+            keys = {_norm_key(p.name), _norm_key(pid)}
+            installed_keys |= keys
             if _is_bundled(p):
-                bundled_dirs.add(p.name)
-                bundled_dirs.add(pid)
+                bundled_keys |= keys
         for e in entries:
-            e["installed"] = e["dirname"] in installed_dirs
-            # Surface dirname-collision with a bundled plugin so the UI
-            # can prompt before installing an override. Doesn't catch the
-            # case where the registry entry's install command targets a
-            # different directory than the bundled one — that requires
-            # an `upstream` annotation that isn't standardised yet.
-            e["overrides_bundled"] = e["dirname"] in bundled_dirs
-        return {"count": len(entries), "entries": entries, "bundled_dirs": sorted(bundled_dirs)}
+            cand = {_norm_key(e["dirname"]), _norm_key(_repo_slug(e["repo"]))}
+            e["installed"] = bool(cand & installed_keys)
+            # overrides_bundled marks a registry row whose plugin already
+            # ships bundled with slopsmith — the UI renders it "Bundled"
+            # (and, in the rare not-yet-installed case, warns before an
+            # Install would clobber the bundled copy).
+            e["overrides_bundled"] = bool(cand & bundled_keys)
+        bundled_dirs = sorted({p.name for pid, p in installed.items() if _is_bundled(p)})
+        return {"count": len(entries), "entries": entries, "bundled_dirs": bundled_dirs}
 
     @app.post("/api/plugins/update_manager/install")
     async def install(body: dict):
