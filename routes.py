@@ -43,6 +43,17 @@ _PROCESS_STARTED_AT = time.time()
 _env_plugins = os.environ.get("SLOPSMITH_PLUGINS_DIR", "").strip()
 IS_DESKTOP = bool(_env_plugins)
 PLUGINS_DIR = Path(_env_plugins) if _env_plugins else Path(__file__).resolve().parent.parent
+# Dir that this plugin's own code is loaded from. On Docker / source
+# checkouts this is the same as PLUGINS_DIR. On slopsmith-desktop it's
+# the read-only app-bundle plugins dir (e.g. Program Files\Slopsmith\...
+# \resources\slopsmith\plugins) while PLUGINS_DIR points to the writable
+# user-data plugins dir (e.g. %APPDATA%\slopsmith-desktop\plugins). The
+# inventory must scan both so that update_manager itself — and any
+# other plugin shipped in the desktop bundle — appears in the row list;
+# without this, clicking Check on the update_manager row returns
+# "Plugin not found" because the only running scan target is the user
+# dir, which doesn't contain it.
+BUNDLED_PLUGINS_DIR = Path(__file__).resolve().parent.parent
 CACHE_DIR = Path(os.environ.get("CONFIG_DIR", "/config")) / "update_manager"
 EXCL_FILE = CACHE_DIR / "exclusions.json"
 
@@ -179,35 +190,70 @@ def _installed_plugin_dirs() -> dict[str, Path]:
     Keyed by the `id` from plugin.json (not the directory name) because
     the slopsmith core exposes plugins to the frontend by manifest id and
     those two can diverge (e.g. dir `tab_view` with id `tabview`).
+
+    Scans PLUGINS_DIR first, then BUNDLED_PLUGINS_DIR (when different —
+    desktop only). PLUGINS_DIR wins on id collision, mirroring slopsmith
+    core's "user override beats bundled" load order: a user who installs
+    an external copy of a desktop-bundled plugin gets their copy in this
+    inventory.
     """
-    out = {}
-    if not PLUGINS_DIR.is_dir():
-        return out
-    for p in sorted(PLUGINS_DIR.iterdir()):
-        if not p.is_dir() or p.name.startswith("_"):
-            continue
-        manifest = p / "plugin.json"
-        if not manifest.exists():
-            continue
-        pid = p.name
+    out: dict[str, Path] = {}
+    seen_resolved: set[Path] = set()
+
+    def _scan(root: Path) -> None:
+        if not root.is_dir():
+            return
         try:
-            data = json.loads(manifest.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("id"), str) and data["id"]:
-                pid = data["id"]
-        except Exception:
-            pass
-        out[pid] = p
+            root_resolved = root.resolve()
+        except OSError:
+            return
+        if root_resolved in seen_resolved:
+            return
+        seen_resolved.add(root_resolved)
+        for p in sorted(root.iterdir()):
+            if not p.is_dir() or p.name.startswith("_"):
+                continue
+            manifest = p / "plugin.json"
+            if not manifest.exists():
+                continue
+            pid = p.name
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and isinstance(data.get("id"), str) and data["id"]:
+                    pid = data["id"]
+            except Exception:
+                pass
+            # PLUGINS_DIR was scanned first; don't let a same-id bundled
+            # entry overwrite a user-installed override.
+            out.setdefault(pid, p)
+
+    _scan(PLUGINS_DIR)
+    _scan(BUNDLED_PLUGINS_DIR)
     return out
 
 
 def _is_bundled(plugin_dir: Path) -> bool:
-    """Return True if the plugin's manifest declares `bundled: true`.
+    """Return True if the plugin can't be updated/uninstalled by this tool.
 
-    Bundled plugins ship in-tree with the slopsmith container image
-    (slopsmith#160). They aren't `git clone`-installed and don't carry
-    a marker file or `.git/`. Updates and uninstalls are handled by
-    slopsmith core, not by this plugin.
+    Two cases:
+      1. The plugin's manifest declares `bundled: true` (slopsmith#160).
+         Bundled core plugins ship in-tree with the container image and
+         are managed by slopsmith itself.
+      2. The plugin lives in BUNDLED_PLUGINS_DIR on a desktop install
+         (i.e. BUNDLED_PLUGINS_DIR != PLUGINS_DIR). Those directories
+         are under the app-bundle root (Program Files / .app) and are
+         read-only at runtime; the desktop app's own auto-updater
+         handles them. Trying to update/uninstall would fail anyway.
     """
+    try:
+        is_under_bundled = (
+            BUNDLED_PLUGINS_DIR.resolve() != PLUGINS_DIR.resolve()
+            and plugin_dir.resolve().parent == BUNDLED_PLUGINS_DIR.resolve()
+        )
+    except OSError:
+        is_under_bundled = False
+    if is_under_bundled:
+        return True
     manifest = plugin_dir / "plugin.json"
     if not manifest.exists():
         return False

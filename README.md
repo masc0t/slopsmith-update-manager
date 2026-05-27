@@ -20,6 +20,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.11.3
+- **Inventory the desktop app-bundle plugins dir** — on slopsmith-desktop, `SLOPSMITH_PLUGINS_DIR` only points at the writable user plugins dir (`%APPDATA%\slopsmith-desktop\plugins`), so plugins shipped inside the app bundle — including the Update Manager itself — were invisible to this plugin's inventory. Clicking **Check** on the update_manager row returned "Plugin not found". `_installed_plugin_dirs()` now scans both the user dir and the read-only bundled dir (where this plugin's own code is loaded from), and `_is_bundled` flags entries living under the bundled dir so the UI hides their Check/Update/Uninstall buttons (the desktop app's own auto-updater manages those).
+
 ### v1.11.2
 - **Desktop-aware update instructions** — the green "Changes applied" banner no longer references `docker compose restart` to users on [slopsmith-desktop](https://github.com/byrongamatos/slopsmith-desktop). Desktop installs get a one-line "Restart Slopsmith to load the new code." paired with the in-app Restart button. The amber rebuild banner is now defensively `data-docker-only`-gated too (the server already hides core tracking on desktop, but belt-and-braces). Closes [#1](https://github.com/masc0t/slopsmith-update-manager/issues/1).
 - **README split into Desktop / Docker top-level sections** — first-time readers no longer have to figure out which install path applies to them; core-update / rebuild flow lives under Docker only.
