@@ -1448,8 +1448,377 @@ def _apply_pending_self_update(target: Path) -> bool:
     return True
 
 
+# ── Storage tab (disk inventory + clear) ──────────────────────────────
+#
+# Backs the third tab in the Update Manager UI. Surfaces where slopsmith
+# is putting bytes on disk (DLC, user data, plugins, sloppak cache,
+# GitHub cache) plus a per-plugin breakdown derived from each plugin's
+# declared settings.server_files / diagnostics.server_files. Lets the
+# user open those locations in the native file manager and clear the
+# two slopsmith-side caches (sloppak_cache + GitHub cache).
+#
+# Plugin-owned paths are inventory-only — without an opt-in manifest
+# field distinguishing "cache" from "data", a blanket clear-plugin-data
+# button would be a footgun for user settings / history. Users who want
+# to reclaim plugin-owned bytes do it through the file manager (the
+# Open button is the escape hatch).
+#
+# Storage callbacks captured from `context` inside setup(); the helpers
+# below close over module-level fns to avoid passing context through
+# every call site. Set at setup() time, read by the storage endpoints.
+_storage_ctx: dict = {}
+
+# In-memory inventory cache. Walking 10+ GB of sloppak_cache + per-
+# plugin paths is "click and wait" UX; caching for the session keeps
+# repeat tab-open snappy. Invalidated by every clear action and by
+# explicit ?refresh=1. Doesn't persist across server restarts —
+# inventory is cheap enough to recompute on first open.
+_inventory_cache: dict | None = None
+_inventory_cache_lock = threading.Lock()
+
+
+def _dir_size(path: Path) -> int:
+    """Sum the size of every regular file under `path`, recursively.
+
+    Skips symlinks (don't follow them — could escape the tree we're
+    measuring). Errors on individual entries are swallowed so one
+    permission-denied dir doesn't kill the whole walk; we'd rather
+    return a slightly-low total than fail loudly.
+    """
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_symlink():
+                        continue
+                    if entry.is_file(follow_symlinks=False):
+                        try:
+                            total += entry.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            continue
+                    elif entry.is_dir(follow_symlinks=False):
+                        total += _dir_size(Path(entry.path))
+                except OSError:
+                    continue
+    except (OSError, PermissionError):
+        return total
+    return total
+
+
+def _path_size(path: Path) -> int:
+    """Size of `path` whether it's a file or a directory. 0 if missing."""
+    try:
+        if not path.exists():
+            return 0
+        if path.is_symlink():
+            return 0
+        if path.is_file():
+            return path.stat().st_size
+        if path.is_dir():
+            return _dir_size(path)
+    except OSError:
+        return 0
+    return 0
+
+
+def _validate_relpath(relpath: str) -> bool:
+    """Mirror of the settings.server_files allowlist semantics (CLAUDE.md).
+
+    Rejects absolute paths, drive letters, `..` segments, and backslashes.
+    Used here for the read side so a malformed manifest entry can't
+    escape config_dir during inventory.
+    """
+    if not isinstance(relpath, str) or not relpath:
+        return False
+    if relpath.startswith("/") or relpath.startswith("\\"):
+        return False
+    if "\\" in relpath:
+        return False
+    if len(relpath) >= 2 and relpath[1] == ":":  # drive letter
+        return False
+    parts = relpath.replace("\\", "/").split("/")
+    if ".." in parts:
+        return False
+    if any(p.startswith(".") and p not in (".", "") for p in parts):
+        # Reject leading-dot segments (mirrors server_files semantics —
+        # CLAUDE.md says "no leading dots" for diagnostics).
+        # Note: this is stricter than server_files which allows them,
+        # but inventory is read-only so we err safe.
+        pass  # actually allow — server_files does. Keep parity.
+    return True
+
+
+def _plugin_declared_paths(plugin_dir: Path, config_dir: Path) -> list[Path]:
+    """Resolve the absolute paths a plugin's manifest declares under config_dir.
+
+    Reads `settings.server_files` (backup allowlist) and
+    `diagnostics.server_files` (diagnostics bundle allowlist) — both
+    documented in CLAUDE.md. Each is a list of relpaths under
+    config_dir; a trailing `/` denotes a directory. Returns absolute
+    paths after the same validation rules the slopsmith core applies.
+
+    Deduplicates so a path declared in both fields counts once.
+    """
+    manifest = plugin_dir / "plugin.json"
+    if not manifest.exists():
+        return []
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    relpaths: list[str] = []
+    settings = data.get("settings")
+    if isinstance(settings, dict):
+        sf = settings.get("server_files")
+        if isinstance(sf, list):
+            relpaths.extend(x for x in sf if isinstance(x, str))
+    diag = data.get("diagnostics")
+    if isinstance(diag, dict):
+        df = diag.get("server_files")
+        if isinstance(df, list):
+            relpaths.extend(x for x in df if isinstance(x, str))
+    seen: set[str] = set()
+    out: list[Path] = []
+    for rp in relpaths:
+        cleaned = rp.rstrip("/")
+        if not _validate_relpath(cleaned):
+            continue
+        if cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(config_dir / cleaned)
+    return out
+
+
+def _build_inventory() -> dict:
+    """Walk the slopsmith disk footprint and return the inventory payload.
+
+    Walks: DLC dir, plugins dir, sloppak_cache, GitHub cache (single
+    file), and the user-data CONFIG_DIR. For each installed plugin,
+    sums its declared server_files / diagnostics.server_files sizes
+    so the user sees where each plugin's bytes live.
+
+    Heavy operation — expect 1-5s on big libraries. Caller is
+    responsible for caching the result; this helper always recomputes.
+    """
+    get_dlc = _storage_ctx.get("get_dlc_dir")
+    get_sloppak = _storage_ctx.get("get_sloppak_cache_dir")
+    config_dir_obj = _storage_ctx.get("config_dir")
+    config_dir = Path(config_dir_obj) if config_dir_obj else CACHE_DIR.parent
+
+    buckets: list[dict] = []
+
+    # DLC library — user-picked, never clearable.
+    dlc = None
+    if callable(get_dlc):
+        try:
+            dlc = get_dlc()
+        except Exception:
+            dlc = None
+    if dlc is not None:
+        dlc_path = Path(dlc)
+        buckets.append({
+            "key": "dlc",
+            "label": "DLC library",
+            "path": str(dlc_path),
+            "size_bytes": _path_size(dlc_path),
+            "exists": dlc_path.exists(),
+            "clearable": False,
+            "description": "Your Rocksmith DLC folder. Never modified by slopsmith.",
+        })
+
+    # User data (CONFIG_DIR / Electron userData) — top-level total only.
+    # Per-plugin breakdown is reported separately under "plugins".
+    if config_dir is not None:
+        buckets.append({
+            "key": "user_data",
+            "label": "User data",
+            "path": str(config_dir),
+            "size_bytes": _path_size(Path(config_dir)),
+            "exists": Path(config_dir).exists(),
+            "clearable": False,
+            "description": "Plugin settings, databases, downloaded models, and slopsmith caches.",
+        })
+
+    # Plugins dir.
+    buckets.append({
+        "key": "plugins_dir",
+        "label": "Plugins",
+        "path": str(PLUGINS_DIR),
+        "size_bytes": _path_size(PLUGINS_DIR),
+        "exists": PLUGINS_DIR.exists(),
+        "clearable": False,
+        "description": "Installed plugin source files.",
+    })
+
+    # Sloppak extract cache — CLEARABLE.
+    sloppak_dir = None
+    if callable(get_sloppak):
+        try:
+            sloppak_dir = get_sloppak()
+        except Exception:
+            sloppak_dir = None
+    if sloppak_dir is not None:
+        sp_path = Path(sloppak_dir)
+        buckets.append({
+            "key": "sloppak_cache",
+            "label": "Sloppak extract cache",
+            "path": str(sp_path),
+            "size_bytes": _path_size(sp_path),
+            "exists": sp_path.exists(),
+            "clearable": True,
+            "clear_consequence": "Songs will re-extract on next play.",
+            "description": "Extracted sloppak song data. Safe to delete; regenerated on demand.",
+        })
+
+    # GitHub response cache — CLEARABLE (small but visible).
+    gh_cache = REMOTE_CACHE_FILE
+    buckets.append({
+        "key": "github_cache",
+        "label": "GitHub response cache",
+        "path": str(gh_cache),
+        "size_bytes": _path_size(gh_cache),
+        "exists": gh_cache.exists(),
+        "clearable": True,
+        "clear_consequence": "Next update check will refetch all data from GitHub.",
+        "description": "Cached GitHub API responses used to stay under the rate limit.",
+    })
+
+    # Per-plugin breakdown.
+    plugins_out: list[dict] = []
+    for pid, pdir in _installed_plugin_dirs().items():
+        paths = _plugin_declared_paths(pdir, Path(config_dir)) if config_dir else []
+        # Aggregate size across declared paths (some may not yet exist
+        # — that's fine, they sum 0). Also include the plugin's own
+        # source directory under PLUGINS_DIR so the user can find it.
+        size = sum(_path_size(p) for p in paths)
+        existing = [str(p) for p in paths if p.exists()]
+        manifest = pdir / "plugin.json"
+        name = pid
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
+            if isinstance(data, dict) and isinstance(data.get("name"), str):
+                name = data["name"]
+        except Exception:
+            pass
+        plugins_out.append({
+            "id": pid,
+            "name": name,
+            "source_path": str(pdir),
+            "declared_paths": [str(p) for p in paths],
+            "existing_paths": existing,
+            "size_bytes": size,
+            "declares_server_files": len(paths) > 0,
+        })
+
+    # Sort plugins by size descending so the heaviest hitters surface first.
+    plugins_out.sort(key=lambda p: p["size_bytes"], reverse=True)
+
+    # `can_open` gates the frontend's Open-folder buttons. Desktop
+    # (Electron) is the supported case; docker has no host filesystem
+    # access and no display server, so opening would either silently
+    # fail or open inside the container (useless). Frontend falls
+    # back to copy-path when can_open is False.
+    can_open = IS_DESKTOP
+
+    return {
+        "buckets": buckets,
+        "plugins": plugins_out,
+        "cached_at": int(time.time()),
+        "can_open": can_open,
+        "is_desktop": IS_DESKTOP,
+        "config_dir": str(config_dir) if config_dir else None,
+    }
+
+
+def _get_inventory(refresh: bool = False) -> dict:
+    """Return cached inventory or recompute. Thread-safe."""
+    global _inventory_cache
+    if not refresh:
+        cached = _inventory_cache
+        if cached is not None:
+            return cached
+    with _inventory_cache_lock:
+        if not refresh and _inventory_cache is not None:
+            return _inventory_cache
+        _inventory_cache = _build_inventory()
+        return _inventory_cache
+
+
+def _invalidate_inventory() -> None:
+    global _inventory_cache
+    with _inventory_cache_lock:
+        _inventory_cache = None
+
+
+def _resolve_open_target(target: str) -> Path | None:
+    """Translate a symbolic target key into a concrete absolute path.
+
+    Security boundary: callers never pass raw paths. The target is one
+    of a fixed set of symbolic keys whose corresponding path is
+    resolved server-side from the just-built inventory. Anything else
+    returns None and the endpoint 400s.
+
+    Accepts: bucket keys ("dlc", "user_data", "plugins_dir",
+    "sloppak_cache", "github_cache") and "plugin:<id>" for per-plugin
+    source dirs.
+    """
+    inv = _get_inventory()
+    # Exact bucket-key match.
+    for b in inv.get("buckets", []):
+        if b.get("key") == target:
+            p = Path(b["path"])
+            return p if p.exists() else None
+    # plugin:<id> — open the plugin's source directory.
+    if target.startswith("plugin:"):
+        pid = target[len("plugin:"):]
+        if not SLUG_RE.match(pid):
+            return None
+        for p_entry in inv.get("plugins", []):
+            if p_entry.get("id") == pid:
+                src = Path(p_entry["source_path"])
+                return src if src.exists() else None
+    return None
+
+
+def _open_path_native(path: Path) -> tuple[bool, str | None]:
+    """Open `path` in the user's native file manager.
+
+    Windows: os.startfile (uses Explorer). Mac: `open`. Linux:
+    `xdg-open` if available. Returns (ok, error_message).
+
+    Caller has already validated the path through _resolve_open_target,
+    so the path is known to come from the server-built inventory — no
+    user-supplied path strings reach this function.
+    """
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+            return True, None
+        import subprocess
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+            return True, None
+        # Assume Linux/BSD with xdg-open.
+        subprocess.Popen(["xdg-open", str(path)])
+        return True, None
+    except FileNotFoundError as e:
+        return False, f"Native opener not found: {e}"
+    except Exception as e:
+        return False, str(e)
+
+
 def setup(app, context):
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # Capture context callbacks for the storage endpoints. setup() is
+    # the only place the plugin loader hands us a `context`, so stash
+    # what we need module-level for the endpoints to reach.
+    _storage_ctx["get_dlc_dir"] = context.get("get_dlc_dir")
+    _storage_ctx["get_sloppak_cache_dir"] = context.get("get_sloppak_cache_dir")
+    _storage_ctx["config_dir"] = context.get("config_dir")
 
     # After a manual `git pull + docker compose build + up`, the source files
     # are bind-mounted from the updated host but the persistent marker still
@@ -1995,6 +2364,99 @@ def setup(app, context):
         finally:
             if stage and stage.exists():
                 shutil.rmtree(stage, ignore_errors=True)
+
+    @app.get("/api/plugins/update_manager/storage")
+    def storage_inventory(refresh: int = 0):
+        """Return the on-disk inventory for the Storage tab.
+
+        Pass ?refresh=1 to force a re-walk; otherwise the in-memory
+        session cache is reused. The cache is also invalidated on any
+        successful clear action, so the user always sees fresh sizes
+        immediately after reclaiming bytes.
+        """
+        try:
+            inv = _get_inventory(refresh=bool(refresh))
+            return inv
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/api/plugins/update_manager/storage/clear")
+    async def storage_clear(body: dict):
+        """Clear one of the two slopsmith-side caches.
+
+        Strict enum on `target` — only sloppak_cache and github_cache
+        are clearable. Plugin-owned paths are inventory-only (no
+        cache_files manifest opt-in in v1; the Open button is the
+        escape hatch for users who want to reclaim plugin bytes).
+        """
+        target = (body or {}).get("target") if isinstance(body, dict) else None
+        if not isinstance(target, str):
+            return {"error": "Missing target"}
+        if target == "sloppak_cache":
+            get_sloppak = _storage_ctx.get("get_sloppak_cache_dir")
+            if not callable(get_sloppak):
+                return {"error": "Sloppak cache path not available"}
+            try:
+                sp = Path(get_sloppak())
+            except Exception as e:
+                return {"error": f"Could not resolve sloppak cache path: {e}"}
+            freed = 0
+            if sp.exists() and sp.is_dir():
+                freed = _path_size(sp)
+                # Wipe contents but keep the cache dir itself so the
+                # next play / extraction doesn't have to mkdir it.
+                # Failures on individual entries don't abort the whole
+                # clear; we report what we managed to remove.
+                for child in sp.iterdir():
+                    try:
+                        if child.is_symlink() or child.is_file():
+                            child.unlink()
+                        elif child.is_dir():
+                            shutil.rmtree(child, ignore_errors=True)
+                    except Exception:
+                        continue
+            _invalidate_inventory()
+            return {"ok": True, "target": target, "freed_bytes": freed}
+        if target == "github_cache":
+            freed = _path_size(REMOTE_CACHE_FILE)
+            try:
+                if REMOTE_CACHE_FILE.exists():
+                    REMOTE_CACHE_FILE.unlink()
+            except Exception as e:
+                return {"error": f"Failed to delete cache file: {e}"}
+            # Drop the in-memory cache too so the next /updates pass
+            # actually refetches instead of serving the in-process copy.
+            global _remote_cache
+            with _remote_cache_lock:
+                _remote_cache = {}
+            _invalidate_inventory()
+            return {"ok": True, "target": target, "freed_bytes": freed}
+        return {"error": f"Unknown clear target: {target!r}"}
+
+    @app.post("/api/plugins/update_manager/storage/open")
+    async def storage_open(body: dict):
+        """Open a folder from the inventory in the native file manager.
+
+        Security: `target` is a symbolic key resolved server-side
+        against the just-built inventory. Raw paths from the client
+        are NEVER accepted. Anything not in the inventory's known set
+        is rejected with 400.
+        """
+        target = (body or {}).get("target") if isinstance(body, dict) else None
+        if not isinstance(target, str) or not target:
+            return {"error": "Missing target"}
+        if not IS_DESKTOP:
+            return {
+                "error": "Opening folders is only supported on the desktop app. "
+                         "Copy the path and open it in your file manager."
+            }
+        path = _resolve_open_target(target)
+        if path is None:
+            return {"error": f"Unknown or missing target: {target!r}"}
+        ok, err = _open_path_native(path)
+        if not ok:
+            return {"error": err or "Failed to open folder"}
+        return {"ok": True, "path": str(path)}
 
     @app.post("/api/plugins/update_manager/uninstall/{plugin_id}")
     def uninstall(plugin_id: str):

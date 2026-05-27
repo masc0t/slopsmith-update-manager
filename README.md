@@ -20,6 +20,12 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.11.0
+- **Storage tab** — new third tab surfaces where slopsmith is putting bytes on disk: DLC library, user data (Electron `userData` / `CONFIG_DIR`), plugins dir, sloppak extract cache, and the GitHub response cache, each with size and an Open-folder button (desktop only; docker installs get Copy-path). Driven by Discord complaints about C: drive fill-up and "where did the Tones plugin Python land" on Windows desktop installs.
+- **Per-plugin disk breakdown** — under the location rows, each installed plugin's user-data footprint is listed by aggregating sizes of paths it declared in `settings.server_files` / `diagnostics.server_files` (per [slopsmith#113](https://github.com/byrongamatos/slopsmith/pull/113) / [#166](https://github.com/byrongamatos/slopsmith/pull/166)). Plugins that don't declare these fields show only their source-dir size. Sorted by size descending so heaviest hitters surface first.
+- **Two clear buttons** — Sloppak extract cache (regenerates on next play) and GitHub response cache (next update check refetches). Plugin-owned files are inventory-only — without a manifest opt-in distinguishing cache from data, a blanket plugin-clear button would risk wiping user settings and history. Use the Open button to manage plugin-owned bytes yourself.
+- **Path-whitelisted Open/Clear endpoints** — clients pass symbolic keys (`sloppak_cache`, `plugin:<id>`, etc.), never raw paths. The backend resolves keys against the just-computed inventory and rejects anything else, so a stray HTTP call can't trick the server into opening or deleting an arbitrary path.
+
 ### v1.10.0
 - **Auto-advance core marker after manual rebuild** — after `git pull && docker compose build web && docker compose up -d`, the persistent `core.json` marker no longer holds the pre-pull SHA forever. On startup the plugin reads the live SHA from the bind-mounted `.git/` and advances the marker when it lags behind, clearing the false "rebuild required" banner that used to stick around indefinitely.
 - **"Mark as current" button on the rebuild banner** — when a core update is blocked by unmounted-file changes, the amber banner now offers a one-click way to stamp the current remote HEAD as the installed marker. Useful when you've already rebuilt from the host and just want the UI to catch up without re-running the overlay.

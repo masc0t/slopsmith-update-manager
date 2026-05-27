@@ -33,6 +33,8 @@
             class="px-4 py-2 text-sm transition border-b-2 border-accent text-white">Installed &amp; Updates</button>
         <button onclick="updaterTab('browse')" id="updater-tab-browse"
             class="px-4 py-2 text-sm transition border-b-2 border-transparent text-gray-500 hover:text-white">Browse Registry</button>
+        <button onclick="updaterTab('storage')" id="updater-tab-storage"
+            class="px-4 py-2 text-sm transition border-b-2 border-transparent text-gray-500 hover:text-white">Storage</button>
         <span class="flex-1"></span>
         <span id="updater-last-checked" class="text-xs text-gray-600"></span>
     </div>
@@ -92,5 +94,17 @@
         </div>
         <div id="updater-browse-loading" class="hidden text-gray-500 text-sm py-8 text-center">Fetching registry from GitHub...</div>
         <div id="updater-browse-list" class="space-y-2"></div>
+    </div>
+
+    <!-- Storage tab -->
+    <div id="updater-pane-storage" class="hidden">
+        <div class="flex items-center gap-3 mb-4 flex-wrap">
+            <button onclick="updaterStorageRefresh()" id="updater-storage-refresh-btn"
+                class="bg-dark-600 hover:bg-dark-500 px-4 py-2 rounded-xl text-sm text-gray-300 transition">Refresh</button>
+            <span id="updater-storage-status" class="text-xs text-gray-500"></span>
+        </div>
+        <p class="text-gray-500 text-xs mb-4">Where slopsmith is putting bytes on disk. Clear buttons reclaim slopsmith&rsquo;s own caches; plugin-owned files are inventory-only &mdash; use Open to manage them in your file manager.</p>
+        <div id="updater-storage-loading" class="hidden text-gray-500 text-sm py-8 text-center">Walking disk...</div>
+        <div id="updater-storage-content"></div>
     </div>
 </div>

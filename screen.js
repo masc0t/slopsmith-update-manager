@@ -154,27 +154,28 @@
     }
 
     // ── Tabs ───────────────────────────────────────────────────────────
+    let storageData = null;     // last /storage payload — null until first load
+    let storageLoading = false; // dedupe overlapping fetches
+
     window.updaterTab = function (tab) {
         currentTab = tab;
         const tUp = document.getElementById('updater-tab-updates');
         const tBr = document.getElementById('updater-tab-browse');
+        const tSt = document.getElementById('updater-tab-storage');
         const pUp = document.getElementById('updater-pane-updates');
         const pBr = document.getElementById('updater-pane-browse');
+        const pSt = document.getElementById('updater-pane-storage');
         const activeCls = 'px-4 py-2 text-sm transition border-b-2 border-accent text-white';
         const idleCls = 'px-4 py-2 text-sm transition border-b-2 border-transparent text-gray-500 hover:text-white';
-        if (tab === 'updates') {
-            tUp.className = activeCls;
-            tBr.className = idleCls;
-            pUp.classList.remove('hidden');
-            pBr.classList.add('hidden');
-            if (!plugins.length) updaterCheck();
-        } else {
-            tUp.className = idleCls;
-            tBr.className = activeCls;
-            pUp.classList.add('hidden');
-            pBr.classList.remove('hidden');
-            if (!registry.length) updaterLoadRegistry();
-        }
+        tUp.className = (tab === 'updates') ? activeCls : idleCls;
+        tBr.className = (tab === 'browse') ? activeCls : idleCls;
+        if (tSt) tSt.className = (tab === 'storage') ? activeCls : idleCls;
+        pUp.classList.toggle('hidden', tab !== 'updates');
+        pBr.classList.toggle('hidden', tab !== 'browse');
+        if (pSt) pSt.classList.toggle('hidden', tab !== 'storage');
+        if (tab === 'updates' && !plugins.length) updaterCheck();
+        else if (tab === 'browse' && !registry.length) updaterLoadRegistry();
+        else if (tab === 'storage' && storageData === null) updaterLoadStorage(false);
     };
 
     // ── Check for updates ──────────────────────────────────────────────
@@ -1164,6 +1165,209 @@
         localStorage.removeItem(RESTART_KEY);
         clearPendingRestart();
         updaterRenderUpdates();
+    };
+
+    // ── Storage tab ────────────────────────────────────────────────────
+    async function updaterLoadStorage(refresh) {
+        if (storageLoading) return;
+        storageLoading = true;
+        const loading = document.getElementById('updater-storage-loading');
+        const content = document.getElementById('updater-storage-content');
+        const refreshBtn = document.getElementById('updater-storage-refresh-btn');
+        const statusEl = document.getElementById('updater-storage-status');
+        if (loading) loading.classList.remove('hidden');
+        if (content) content.innerHTML = '';
+        if (refreshBtn) refreshBtn.disabled = true;
+        if (statusEl) { statusEl.textContent = ''; statusEl.className = 'text-xs text-gray-500'; }
+        try {
+            const url = API + '/storage' + (refresh ? '?refresh=1' : '');
+            const r = await fetch(url);
+            const j = await r.json();
+            if (j.error) {
+                if (statusEl) {
+                    statusEl.textContent = 'Failed: ' + j.error;
+                    statusEl.className = 'text-xs text-red-400';
+                }
+                return;
+            }
+            storageData = j;
+            updaterRenderStorage();
+        } catch (e) {
+            if (statusEl) {
+                statusEl.textContent = 'Failed: ' + e.message;
+                statusEl.className = 'text-xs text-red-400';
+            }
+        } finally {
+            storageLoading = false;
+            if (loading) loading.classList.add('hidden');
+            if (refreshBtn) refreshBtn.disabled = false;
+        }
+    }
+
+    window.updaterStorageRefresh = function () { updaterLoadStorage(true); };
+
+    function formatBytes(n) {
+        if (typeof n !== 'number' || !isFinite(n) || n <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let i = 0;
+        let v = n;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+        return (i === 0 ? v.toFixed(0) : v.toFixed(v >= 10 ? 1 : 2)) + ' ' + units[i];
+    }
+
+    function updaterRenderStorage() {
+        const content = document.getElementById('updater-storage-content');
+        if (!content || !storageData) return;
+        const canOpen = !!storageData.can_open;
+        const buckets = storageData.buckets || [];
+        const plugins = storageData.plugins || [];
+
+        const bucketRowsHtml = buckets.map(b => storageRowHtml({
+            key: b.key,
+            label: b.label,
+            path: b.path,
+            size: b.size_bytes,
+            exists: b.exists,
+            clearable: b.clearable,
+            clearConsequence: b.clear_consequence,
+            description: b.description,
+            canOpen,
+        })).join('');
+
+        const pluginRowsHtml = plugins.length === 0
+            ? `<div class="text-gray-500 text-xs py-4 text-center">No installed plugins declare any user-data paths.</div>`
+            : plugins.map(p => storageRowHtml({
+                key: 'plugin:' + p.id,
+                label: p.name,
+                path: p.source_path,
+                size: p.size_bytes,
+                exists: true,
+                clearable: false,
+                description: p.declares_server_files
+                    ? `Declares ${p.declared_paths.length} user-data path${p.declared_paths.length === 1 ? '' : 's'} under your config dir.`
+                    : `No declared user-data paths. Size shown is the plugin&rsquo;s source directory only.`,
+                canOpen,
+            })).join('');
+
+        content.innerHTML = `
+            <div class="space-y-2 mb-6">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Locations</h3>
+                ${bucketRowsHtml}
+            </div>
+            <div class="space-y-2">
+                <h3 class="text-xs font-semibold uppercase tracking-wider text-gray-500 mb-2">Plugins (by size)</h3>
+                ${pluginRowsHtml}
+            </div>
+            ${!canOpen ? `<p class="text-gray-500 text-[11px] mt-4">Open-folder buttons are disabled in non-desktop installs &mdash; use Copy to paste the path into your file manager.</p>` : ''}
+        `;
+    }
+
+    function storageRowHtml(r) {
+        const sizeText = r.exists ? formatBytes(r.size) : 'missing';
+        const sizeColor = r.exists ? 'text-gray-300' : 'text-gray-600';
+        const openLabel = r.canOpen ? 'Open' : 'Copy path';
+        // Embed JS string literals via JSON.stringify, then HTML-escape
+        // for safe attribute context. Handles Windows paths with
+        // backslashes, paths with quotes, and consequence strings.
+        const keyJs = esc(JSON.stringify(r.key));
+        const pathJs = esc(JSON.stringify(r.path));
+        const consequenceJs = esc(JSON.stringify(r.clearConsequence || ''));
+        const openFn = r.canOpen ? `updaterStorageOpen(${keyJs})` : `updaterStorageCopy(${pathJs}, this)`;
+        const clearBtn = r.clearable && r.exists && r.size > 0
+            ? `<button onclick="updaterStorageClear(${keyJs}, ${r.size}, ${consequenceJs})"
+                       class="bg-dark-600 hover:bg-red-900/50 text-gray-400 hover:text-red-400 px-3 py-1.5 rounded-md text-xs transition">Clear</button>`
+            : '';
+        return `
+            <div class="bg-dark-800/50 border border-gray-800 rounded-xl p-4">
+                <div class="flex items-start gap-3">
+                    <div class="flex-1 min-w-0">
+                        <div class="flex items-baseline gap-3 mb-1">
+                            <span class="text-sm font-semibold text-gray-200">${esc(r.label)}</span>
+                            <span class="text-sm font-mono ${sizeColor}">${esc(sizeText)}</span>
+                        </div>
+                        <div class="text-[11px] text-gray-500 font-mono break-all mb-1">${esc(r.path)}</div>
+                        ${r.description ? `<div class="text-[11px] text-gray-500">${r.description}</div>` : ''}
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <button onclick="${openFn}"
+                            class="bg-dark-600 hover:bg-dark-500 text-gray-300 px-3 py-1.5 rounded-md text-xs transition">${openLabel}</button>
+                        ${clearBtn}
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    window.updaterStorageOpen = async function (target) {
+        try {
+            const r = await fetch(API + '/storage/open', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target }),
+            });
+            const j = await r.json();
+            if (j.error) {
+                const statusEl = document.getElementById('updater-storage-status');
+                if (statusEl) {
+                    statusEl.textContent = 'Open failed: ' + j.error;
+                    statusEl.className = 'text-xs text-red-400';
+                }
+            }
+        } catch (e) {
+            const statusEl = document.getElementById('updater-storage-status');
+            if (statusEl) {
+                statusEl.textContent = 'Open failed: ' + e.message;
+                statusEl.className = 'text-xs text-red-400';
+            }
+        }
+    };
+
+    window.updaterStorageCopy = async function (path, btn) {
+        try {
+            await navigator.clipboard.writeText(path);
+            const orig = btn.textContent;
+            btn.textContent = 'Copied';
+            setTimeout(() => { btn.textContent = orig; }, 1500);
+        } catch (e) {
+            btn.textContent = 'Copy failed';
+        }
+    };
+
+    window.updaterStorageClear = async function (target, sizeBytes, consequence) {
+        const sizeText = formatBytes(sizeBytes);
+        const consequenceText = consequence ? ' ' + consequence : '';
+        if (!confirm(`Clear ${sizeText}?${consequenceText}`)) return;
+        const statusEl = document.getElementById('updater-storage-status');
+        if (statusEl) {
+            statusEl.textContent = 'Clearing...';
+            statusEl.className = 'text-xs text-gray-400';
+        }
+        try {
+            const r = await fetch(API + '/storage/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target }),
+            });
+            const j = await r.json();
+            if (j.error) {
+                if (statusEl) {
+                    statusEl.textContent = 'Clear failed: ' + j.error;
+                    statusEl.className = 'text-xs text-red-400';
+                }
+                return;
+            }
+            if (statusEl) {
+                statusEl.textContent = 'Freed ' + formatBytes(j.freed_bytes || 0) + '.';
+                statusEl.className = 'text-xs text-green-400';
+            }
+            // Re-fetch inventory so the sizes update immediately.
+            await updaterLoadStorage(true);
+        } catch (e) {
+            if (statusEl) {
+                statusEl.textContent = 'Clear failed: ' + e.message;
+                statusEl.className = 'text-xs text-red-400';
+            }
+        }
     };
 
     // ── Utility ────────────────────────────────────────────────────────
