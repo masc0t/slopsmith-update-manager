@@ -639,3 +639,55 @@ def test_is_bundled_does_not_flag_on_docker(tmp_path, monkeypatch):
     monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", shared)
 
     assert routes._is_bundled(p) is False
+
+
+# ── Registry browse "Bundled" vs "Installed" (dir-name/id mismatch) ──────
+
+
+def test_registry_marks_bundled_when_dirname_matches_manifest_id(client, fake_dirs, monkeypatch):
+    """Regression: bundled plugins whose on-disk directory name differs
+    from their manifest id (dir `tabimport`/id `tab_import`, dir
+    `practice`/id `practice_journal`) were shown as plain "Installed"
+    instead of "Bundled" in the registry browser. The README install
+    command yields a dirname equal to the manifest *id*, so matching only
+    on the directory name missed them. They must report overrides_bundled.
+    """
+    user_dir = fake_dirs["tmp"] / "user_plugins"
+    bundled_dir = fake_dirs["tmp"] / "bundled_plugins"
+    user_dir.mkdir()
+    bundled_dir.mkdir()
+    # Only manually-installed plugin lives in the user dir.
+    _write_plugin(user_dir, "midi_capo")
+    # Bundled plugins: directory name != manifest id.
+    _write_plugin(bundled_dir, "tab_import", dirname="tabimport", name="Import Tab")
+    _write_plugin(bundled_dir, "practice_journal", dirname="practice", name="Practice Journal")
+    # Bundled plugin whose dir name == id (the case that already worked).
+    _write_plugin(bundled_dir, "setlist")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
+
+    monkeypatch.setattr(routes, "_http_get", lambda *a, **kw: b"")
+    monkeypatch.setattr(routes, "_parse_registry", lambda md: [
+        {"name": "Import Tab", "dirname": "tab_import", "url": "u", "repo": "r", "description": "d"},
+        {"name": "Practice Journal", "dirname": "practice_journal", "url": "u", "repo": "r", "description": "d"},
+        {"name": "Setlist Builder", "dirname": "setlist", "url": "u", "repo": "r", "description": "d"},
+        {"name": "MIDI Capo", "dirname": "midi_capo", "url": "u", "repo": "r", "description": "d"},
+        {"name": "Tab View", "dirname": "tab_view", "url": "u", "repo": "r", "description": "d"},
+    ])
+
+    r = client.get("/api/plugins/update_manager/registry")
+    assert r.status_code == 200
+    by_dir = {e["dirname"]: e for e in r.json()["entries"]}
+
+    # Bundled plugins (regardless of dir/id mismatch) → Bundled.
+    for d in ("tab_import", "practice_journal", "setlist"):
+        assert by_dir[d]["installed"] is True, d
+        assert by_dir[d]["overrides_bundled"] is True, d
+
+    # Manually-installed (user dir) → Installed, not Bundled.
+    assert by_dir["midi_capo"]["installed"] is True
+    assert by_dir["midi_capo"]["overrides_bundled"] is False
+
+    # Not present anywhere → installable.
+    assert by_dir["tab_view"]["installed"] is False
+    assert by_dir["tab_view"]["overrides_bundled"] is False
