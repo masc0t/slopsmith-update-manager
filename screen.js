@@ -148,6 +148,7 @@
         }
         if (isDesktop) {
             document.querySelectorAll('[data-docker-only]').forEach(el => el.classList.add('hidden'));
+            document.querySelectorAll('[data-desktop-only]').forEach(el => el.classList.remove('hidden'));
         }
         if (currentTab === 'updates') updaterCheck();
         else updaterLoadRegistry();

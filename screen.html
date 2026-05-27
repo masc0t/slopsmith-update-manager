@@ -13,7 +13,8 @@
             </svg>
             <div class="flex-1">
                 <p class="text-green-300 text-sm font-semibold mb-1">Changes applied</p>
-                <p class="text-gray-400 text-xs mb-3">Restart the server so the new code loads. The easiest option is in-place restart below; alternatively run <code class="bg-dark-800 px-1 rounded">docker compose restart</code> yourself.</p>
+                <p data-docker-only class="text-gray-400 text-xs mb-3">Restart the server so the new code loads. The easiest option is in-place restart below; alternatively run <code class="bg-dark-800 px-1 rounded">docker compose restart</code> yourself.</p>
+                <p data-desktop-only class="hidden text-gray-400 text-xs mb-3">Restart Slopsmith to load the new code.</p>
                 <div class="flex items-center gap-2 mb-3 flex-wrap">
                     <button onclick="updaterRestart()" id="updater-restart-btn"
                         class="bg-accent hover:bg-accent/80 px-4 py-1.5 rounded-lg text-xs text-white font-semibold transition">Restart now</button>
@@ -50,7 +51,7 @@
         </div>
 
         <!-- Rebuild-required banner (shown when core has unmounted-file changes) -->
-        <div id="updater-rebuild-banner" class="hidden mb-4 bg-dark-700 border border-amber-500/30 rounded-xl p-5">
+        <div id="updater-rebuild-banner" data-docker-only class="hidden mb-4 bg-dark-700 border border-amber-500/30 rounded-xl p-5">
             <div class="flex items-start gap-3">
                 <svg class="w-5 h-5 text-amber-400 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M4.93 4.93l14.14 14.14M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>

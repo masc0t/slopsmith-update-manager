@@ -20,6 +20,10 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.11.2
+- **Desktop-aware update instructions** — the green "Changes applied" banner no longer references `docker compose restart` to users on [slopsmith-desktop](https://github.com/byrongamatos/slopsmith-desktop). Desktop installs get a one-line "Restart Slopsmith to load the new code." paired with the in-app Restart button. The amber rebuild banner is now defensively `data-docker-only`-gated too (the server already hides core tracking on desktop, but belt-and-braces). Closes [#1](https://github.com/masc0t/slopsmith-update-manager/issues/1).
+- **README split into Desktop / Docker top-level sections** — first-time readers no longer have to figure out which install path applies to them; core-update / rebuild flow lives under Docker only.
+
 ### v1.11.0
 - **Storage tab** — new third tab surfaces where slopsmith is putting bytes on disk: DLC library, user data (Electron `userData` / `CONFIG_DIR`), plugins dir, sloppak extract cache, and the GitHub response cache, each with size and an Open-folder button (desktop only; docker installs get Copy-path). Driven by Discord complaints about C: drive fill-up and "where did the Tones plugin Python land" on Windows desktop installs.
 - **Per-plugin disk breakdown** — under the location rows, each installed plugin's user-data footprint is listed by aggregating sizes of paths it declared in `settings.server_files` / `diagnostics.server_files` (per [slopsmith#113](https://github.com/byrongamatos/slopsmith/pull/113) / [#166](https://github.com/byrongamatos/slopsmith/pull/166)). Plugins that don't declare these fields show only their source-dir size. Sorted by size descending so heaviest hitters surface first.
@@ -63,13 +67,24 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 - **Rebuild-required guard** — if the GitHub compare between your installed SHA and the remote HEAD reports changes to any path outside the bind-mounted set, the update is blocked and an amber banner lists the offending files plus a copy-paste rebuild command.
 - **Rename** — plugin id and install path are now `update_manager` (was `plugin_manager`). API routes moved from `/api/plugins/plugin_manager/*` to `/api/plugins/update_manager/*`.
 
-## Requirements
+## Slopsmith Desktop
+
+On [slopsmith-desktop](https://github.com/byrongamatos/slopsmith-desktop) the Update Manager is pre-installed — no setup required. Open **Update Manager** in the nav.
+
+- **Plugins** — install, update, and uninstall through the UI exactly the same way as on Docker.
+- **Restart** — when an update applies, click **Restart now** in the green banner. Electron tears down and relaunches the bundled server for you.
+- **Core updates** — not handled by this plugin on desktop. The slopsmith-desktop app has its own auto-updater for the core, so the "Slopsmith Core" card and the rebuild banner are hidden in desktop mode.
+- **Storage tab** — uses native folder-open via Electron (the **Open** buttons launch your OS file manager).
+
+## Docker
+
+### Requirements
 
 - Outbound HTTPS from the slopsmith container to `github.com`, `api.github.com`, `raw.githubusercontent.com`, `codeload.github.com`
 - No additional Python dependencies — stdlib only (`urllib`, `zipfile`)
 - A readable `/proc/self/cmdline` inside the container (standard on Linux) — used by the in-place restart
 
-## Installation
+### Installation
 
 ```bash
 cd /path/to/slopsmith/plugins
@@ -79,7 +94,7 @@ docker compose restart
 
 After this one-time bootstrap, further plugins can be installed, the core can be tracked, and the manager itself can be updated through the UI.
 
-## How It Works
+### How it works
 
 1. Open **Update Manager** in the nav — the Updates tab checks installed plugins and the core against GitHub in parallel
 2. For each installed plugin, the installed commit SHA is read from either a `.slopsmith-installed.json` marker (plugins installed through this tool) or the plugin's `.git/config` and `.git/HEAD` (plugins cloned manually on the host)
@@ -90,7 +105,7 @@ After this one-time bootstrap, further plugins can be installed, the core can be
 
 > **Note:** The plugin only writes to paths that `docker-compose.yml` bind-mounts into the container. Updates that touch image-baked files (`Dockerfile`, `requirements.txt`, etc.) are surfaced as **Rebuild required** and must be applied from the host.
 
-## Slopsmith Core Updates
+### Slopsmith core updates
 
 The core row appears above the plugin table on the Updates tab. It shows the installed SHA, the remote SHA, and a status pill:
 
@@ -99,7 +114,7 @@ The core row appears above the plugin table on the Updates tab. It shows the ins
 - **Update available** — safe to apply from the UI; all changed files fall under the mounted whitelist
 - **Rebuild required** — remote commits touch files outside the mount whitelist; the Update button is disabled and the amber banner lists every blocker plus a copy-paste command
 
-### What gets overlayed
+#### What gets overlayed
 
 Only paths that `docker-compose.yml` bind-mounts into the container can be rewritten from inside it:
 
@@ -110,7 +125,7 @@ Only paths that `docker-compose.yml` bind-mounts into the container can be rewri
 
 `plugins/` is always excluded from core updates — each plugin is tracked independently by this tool and would be clobbered otherwise.
 
-### Rebuild command
+#### Rebuild command
 
 When the core update is blocked, the UI surfaces this host-side command:
 
@@ -118,7 +133,7 @@ When the core update is blocked, the UI surfaces this host-side command:
 cd slopsmith && git pull && docker compose build web && docker compose up -d
 ```
 
-### Exclusions
+#### Exclusions
 
 Toggle the **Exclude** checkbox on the core row to skip it during future checks and "update all". Exclusions are persisted to `/config/update_manager/exclusions.json`.
 
