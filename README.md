@@ -10,7 +10,7 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 - **Browse the registry** — parses the "Available Plugins" table from slopsmith's README and lists every plugin with a one-click Install button
 - **Filter** — search by name, description, or directory
 - **Plugin update detection** — compares each installed plugin's commit SHA against its GitHub default branch (works without the `git` binary)
-- **One-click plugin update** — re-downloads the latest source via GitHub zip and replaces the plugin directory atomically
+- **One-click plugin update** — re-downloads the latest source via GitHub zip and copy-overwrites it onto the plugin directory (in place, no directory rename — works on Windows even while the plugin is loaded)
 - **Slopsmith core updates** — tracks `byrongamatos/slopsmith` alongside your plugins, overlays updates onto the bind-mounted code paths (`server.py`, `ug_browser.py`, `lib/`, `static/`)
 - **Rebuild-required detection** — if an upstream commit touches unmounted files (`Dockerfile`, `requirements.txt`, `docker-compose.yml`, etc.) the update is blocked and the UI shows a copy-paste host command
 - **Update all** — sequentially updates the core plus every plugin that's behind
@@ -19,6 +19,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 - **In-place restart** — `Restart now` button re-execs the uvicorn process via `os.execv` without touching Docker, preserving PID 1 and container lifetime
 
 ## What's New
+
+### v1.14.0
+- **Updates no longer fail on Windows (and the desktop self-update works)** — applying an update used to rename the plugin directory (`target` → `target.bak`, then move the new copy into place). On Windows you can't rename a directory that contains an open file, so updating a *loaded* plugin (its `routes.py` imported, its `screen.js`/`screen.html` being served) failed with `PermissionError [WinError 32] … being used by another process` — the bare "Failed" in [#22](https://github.com/masc0t/slopsmith-update-manager/issues/22). Updates now **copy-overwrite** the new files in place (extracted to a temp dir first, so a failed download never touches your install), which Windows allows even while the plugin is loaded; the new code loads on the next restart, exactly as before. The same change also routes **update_manager updating itself** through this path instead of the old stage-and-swap-on-restart dance — which on the desktop app staged the update but *never applied it* (the apply step only ran in the Docker `/restart` endpoint the desktop never calls). Closes the file-lock half of [#22](https://github.com/masc0t/slopsmith-update-manager/issues/22).
 
 ### v1.13.1
 - **Fix the table's "weird wrapping"** — the update table laid its columns out with an arbitrary-value Tailwind class, `grid-cols-[1fr_auto_auto_auto_auto_auto]`. Slopsmith core compiles Tailwind by scanning only its own source, so a plugin-specific arbitrary value like that gets purged from the shipped `tailwind.min.css`. `grid` (display:grid) survives, so with no column template every cell dropped into its own implicit row and the whole table stacked vertically and centered. The plugin now ships the utilities its layout needs — the grid template, its column gap, and the fixed column widths (`w-20`/`24`/`28`/`40`/`44`) — in a small `#updater-root`-scoped `<style>` block (values matching Tailwind's output exactly), so the layout no longer depends on core's build state. Immune to purges and to plugin-CSS injection-order changes alike. Closes [#20](https://github.com/masc0t/slopsmith-update-manager/issues/20).

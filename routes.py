@@ -65,7 +65,6 @@ CORE_MARKER_FILE = CACHE_DIR / "core.json"
 CORE_EXCLUSION_KEY = "__core__"
 APP_ROOT = Path("/app")
 REBUILD_CMD = "cd slopsmith && git pull && docker compose build web && docker compose up -d"
-SELF_UPDATE_STAGING = CACHE_DIR / "self_update"
 
 
 def _load_exclusions() -> set[str]:
@@ -804,14 +803,50 @@ def _list_versions(owner: str, repo: str, branch: str, limit: int = 30) -> list[
     return versions
 
 
-def _download_and_replace(owner: str, repo: str, ref: str, target: Path, preserve_git: bool) -> None:
-    """Download repo zip at `ref` and atomically replace `target` dir contents.
+def _apply_tree(src_dir: Path, target: Path) -> list[str]:
+    """Copy every file under `src_dir` into `target`, overwriting in place.
+
+    Files are copy-overwritten (not a directory rename) so the apply
+    succeeds even while the plugin is loaded by the running host —
+    renaming/replacing a directory that contains an open file fails on
+    Windows with PermissionError [WinError 32] (#22). Copy-overwrite is
+    safe because Python releases .py file handles after import and assets
+    are opened per-request; the new code takes effect on the next restart
+    (callers mark the row pending-restart).
+
+    Existing files in `target` that aren't present in `src_dir` are left
+    untouched — this preserves local state (.git, plugin-local artifacts)
+    and matches the prior self-update behaviour. Returns the list of
+    relative paths written.
+    """
+    written: list[str] = []
+    target.mkdir(parents=True, exist_ok=True)
+    for src in src_dir.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(src_dir)
+        dst = target / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src), str(dst))
+        written.append(str(rel).replace("\\", "/"))
+    return written
+
+
+def _download_and_replace(owner: str, repo: str, ref: str, target: Path, preserve_git: bool = False) -> None:
+    """Download repo zip at `ref` and apply it over `target` in place.
 
     `ref` is anything codeload.github.com accepts after the trailing slash
     of `/zip/`: a branch path (`refs/heads/main`), a tag path
     (`refs/tags/v1.0.0`), or a commit sha. The legacy callers passed
     branch names without the `refs/heads/` prefix; preserve that
     behaviour by prepending it when the caller didn't.
+
+    The download is extracted to a temp staging dir first (so a failed or
+    partial download never touches `target`), then copy-overwritten across
+    via `_apply_tree`. We deliberately do NOT rename/swap the directory:
+    that fails on Windows when a file in a loaded plugin's dir is held open
+    (#22). `preserve_git` is accepted for call-site compatibility but is
+    now a no-op — copy-overwrite never disturbs an existing `.git/`.
     """
     if not (ref.startswith("refs/") or len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref.lower())):
         # Bare branch name → expand to full ref so codeload finds it.
@@ -824,6 +859,7 @@ def _download_and_replace(owner: str, repo: str, ref: str, target: Path, preserv
         raise RuntimeError("Empty archive")
     prefix = members[0].split("/")[0] + "/"
 
+    target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="slopsmith-plugin-", dir=str(target.parent)))
     try:
         for m in members:
@@ -836,17 +872,7 @@ def _download_and_replace(owner: str, repo: str, ref: str, target: Path, preserv
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(zf.read(m))
 
-        if preserve_git and (target / ".git").exists():
-            shutil.move(str(target / ".git"), str(staging / ".git"))
-
-        backup = target.with_name(target.name + ".bak")
-        if target.exists():
-            if backup.exists():
-                shutil.rmtree(backup, ignore_errors=True)
-            shutil.move(str(target), str(backup))
-        shutil.move(str(staging), str(target))
-        if backup.exists():
-            shutil.rmtree(backup, ignore_errors=True)
+        _apply_tree(staging, target)
     finally:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -877,8 +903,8 @@ def _resolve_source(plugin_dir: Path, force_registry: bool = False) -> dict | No
         forever even after the user is on the latest commit.
       - With naive "git always wins": a UI-triggered zip update
         rewrites the marker but leaves .git/refs/heads/<branch> at
-        its old commit (preserve_git=True), so the git path would
-        report the stale sha.
+        its old commit (the copy-overwrite apply never touches .git),
+        so the git path would report the stale sha.
 
     Fall back to the existing single-source paths (and finally to
     manifest / registry resolution) when only one or neither is
@@ -1496,70 +1522,6 @@ def _overlay_core(stage: Path) -> list[str]:
         shutil.copy2(str(src), str(dst))
         written.append(str(rel).replace("\\", "/"))
     return written
-
-
-def _self_update(owner: str, repo: str, ref: str, sha: str) -> dict:
-    """Download new version to staging and mark for pending restart.
-
-    Returns {"ok": true, "pending_restart": true} so the UI can prompt
-    the user to restart. On restart, _apply_pending_self_update will
-    swap the files before re-execing the server. `ref` accepts the same
-    forms as _download_and_replace (branch / refs/tags/X / sha).
-    """
-    staging = SELF_UPDATE_STAGING
-    if staging.exists():
-        shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True, exist_ok=True)
-
-    if not (ref.startswith("refs/") or len(ref) >= 7 and all(c in "0123456789abcdef" for c in ref.lower())):
-        ref = f"refs/heads/{ref}"
-    url = f"https://codeload.github.com/{owner}/{repo}/zip/{_quote_ref(ref)}"
-    data = _http_get(url, timeout=120)
-    zf = zipfile.ZipFile(io.BytesIO(data))
-    members = [m for m in zf.namelist() if not m.endswith("/")]
-    if not members:
-        return {"error": "Empty archive"}
-    prefix = members[0].split("/")[0] + "/"
-
-    for m in members:
-        if not m.startswith(prefix):
-            continue
-        rel = m[len(prefix):]
-        if not rel or ".." in Path(rel).parts:
-            continue
-        out = staging / rel
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(zf.read(m))
-
-    marker = staging / ".self_update_pending"
-    marker.write_text(json.dumps({
-        "owner": owner, "repo": repo,
-        "ref": ref, "sha": sha,
-        "staged_at": int(time.time()),
-    }, indent=2))
-    return {"ok": True, "pending_restart": True, "sha": sha[:7], "ref": ref}
-
-
-def _apply_pending_self_update(target: Path) -> bool:
-    """Swap staged self-update files into target dir. Returns True if swap occurred."""
-    marker = SELF_UPDATE_STAGING / ".self_update_pending"
-    if not marker.exists():
-        return False
-    staging = SELF_UPDATE_STAGING
-    if not staging.exists():
-        return False
-
-    for src in staging.rglob("*"):
-        if src.name.startswith("."):
-            continue
-        if not src.is_file():
-            continue
-        rel = src.relative_to(staging)
-        dst = target / rel
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(str(src), str(dst))
-    shutil.rmtree(staging, ignore_errors=True)
-    return True
 
 
 # ── Storage tab (disk inventory + clear) ──────────────────────────────
@@ -2340,28 +2302,20 @@ def setup(app, context):
                     return {"error": "Could not resolve latest commit"}
                 ref = branch
                 resolved_branch = branch
-            if plugin_id == "update_manager":
-                return _self_update(owner, repo, ref, sha)
             # A plugin sitting in the read-only desktop bundle dir can't
             # be written in place; lay down a writable override copy
             # under PLUGINS_DIR (slopsmith loads the user-dir copy in
             # preference). Everything else updates in its own directory.
+            # update_manager goes through this same path: copy-overwrite
+            # (see _download_and_replace) safely replaces a plugin's files
+            # even when it's the loaded plugin, so it no longer needs the
+            # old self-update staging dance — and on desktop the override
+            # copy lands directly, which the staging path never applied.
             write_target = _write_target(target)
             overrode_bundled = write_target != target
-            # preserve_git is gated on the **structural** presence of a
-            # .git entry in the WRITE target, NOT on info["source"].
-            # After freshness-based source selection in _resolve_source,
-            # a git-cloned plugin with a recently-rewritten marker
-            # returns source="zip" — using that here would drop the live
-            # .git/ directory (or gitdir-file in the worktree / submodule
-            # case) and lose the user's clone. Mirror
-            # _download_and_replace's own check (`.exists()`) so
-            # worktrees and submodules — which store `.git` as a file
-            # containing `gitdir: …` rather than a directory — are also
-            # preserved. (For a fresh bundled-override copy the target
-            # doesn't exist yet, so this is False, which is correct.)
-            preserve_git = (write_target / ".git").exists()
-            _download_and_replace(owner, repo, ref, write_target, preserve_git=preserve_git)
+            # copy-overwrite never disturbs an existing .git/, so the
+            # caller no longer needs to compute/preserve it.
+            _download_and_replace(owner, repo, ref, write_target)
             _write_marker(write_target, owner, repo, resolved_branch, sha)
             _invalidate_inventory()
             return {
@@ -2384,10 +2338,9 @@ def setup(app, context):
         if IS_DESKTOP:
             # Desktop restart is handled by the Electron renderer via slopsmithDesktop.plugins.restart().
             return {"ok": True, "desktop": True}
-        plugin_target = PLUGINS_DIR / "update_manager"
-        if _apply_pending_self_update(plugin_target):
-            marker = SELF_UPDATE_STAGING / ".self_update_pending"
-            marker.unlink(missing_ok=True)
+        # Updates (including update_manager's own) are now applied
+        # in-place at /update time via copy-overwrite, so there's no
+        # staged self-update left to swap here — just re-exec.
 
         # Snapshot the original argv before returning (after exec, this
         # function never runs to completion).
