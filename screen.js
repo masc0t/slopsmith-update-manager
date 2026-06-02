@@ -8,7 +8,8 @@
 
     let plugins = [];        // /api/plugins result (installed list)
     let updates = {};        // API + '/updates' -> { [id]: {local, remote, branch, source, repo} }
-    let updateErrors = {};
+    let updateErrors = {};   // per-row CHECK errors (from /updates)
+    let updateFailures = {}; // per-row UPDATE-ACTION errors (the Update click failed) — id -> message
     let sources = {};        // { [id]: {repo, url, branch, source} | {bundled: true} }
     let excluded = new Set(); // plugin ids the user has opted out of updates for
     let bundledIds = new Set(); // plugin ids that ship with slopsmith core (issue #1)
@@ -487,6 +488,14 @@
 
             let statusHtml, actionHtml, rowBg, localStr = '', remoteStr = '';
             const isPendingRestart = _pendingRestart.has(p.id);
+            // A previous Update click failed. Surface the backend's actual
+            // error inline (in the wide name column) so it's readable, not
+            // hidden in a hover title. Cleared on a successful update or a
+            // fresh re-check. Suppressed once the row is pending-restart.
+            const failMsg = (!isPendingRestart && updateFailures[p.id]) ? updateFailures[p.id] : '';
+            const failHtml = failMsg
+                ? `<div class="text-[10px] text-red-400 mt-1 break-words" title="${esc(failMsg)}">Update failed: ${esc(failMsg)}</div>`
+                : '';
             if (isPendingRestart) {
                 // Update was applied but the new code isn't loaded
                 // until the user restarts. Override "Update available"
@@ -656,6 +665,7 @@
                 <div class="min-w-0">
                     ${nameHtml}
                     <div class="text-xs text-gray-500 truncate">${esc(p.id)}</div>
+                    ${failHtml}
                 </div>
                 <span class="w-28 text-center hidden sm:block">${localCell}</span>
                 <span class="w-28 text-center hidden sm:block">${remoteCell}</span>
@@ -848,6 +858,9 @@
     window.updaterCheckOne = async function (btn) {
         const id = btn.dataset.pluginId;
         if (_inflightChecks.has(id)) return;
+        // A re-check supersedes a prior failed Update — drop the stale
+        // failure note so the row reflects the fresh check result.
+        delete updateFailures[id];
         _inflightChecks.add(id);
         updaterRenderUpdates();
         try {
@@ -907,7 +920,6 @@
 
     async function updaterDoUpdate(id, btn) {
         btn.disabled = true;
-        const orig = btn.textContent;
         btn.textContent = 'Updating...';
         try {
             const resp = await fetch(API + '/update/' + encodeURIComponent(id), { method: 'POST' });
@@ -919,6 +931,7 @@
                 // "Updated · restart to apply" immediately.
                 delete updates[id];
                 delete updateErrors[id];
+                delete updateFailures[id];
                 markPendingRestart(id);
                 localStorage.setItem(RESTART_KEY, '1');
                 document.getElementById('updater-restart-banner').classList.remove('hidden');
@@ -926,15 +939,15 @@
                 updaterRefreshStatusUI();
                 return true;
             }
-            btn.disabled = false;
-            btn.textContent = 'Failed';
-            btn.title = data.error || 'Unknown error';
-            btn.className = 'bg-red-900/30 text-red-400 px-3 py-1 rounded-lg text-xs';
+            // Surface the real reason inline (not just a hover title) and
+            // re-render so the retry button stays. The backend already
+            // returns the underlying exception in data.error.
+            updateFailures[id] = data.error || 'Unknown error';
+            updaterRenderUpdates();
             return false;
         } catch (e) {
-            btn.disabled = false;
-            btn.textContent = orig;
-            btn.title = e.message;
+            updateFailures[id] = e.message || 'Request failed';
+            updaterRenderUpdates();
             return false;
         }
     }
