@@ -20,6 +20,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 
 ## What's New
 
+### v1.13.2
+- **Surface the real error when an update fails** — clicking Update on a plugin that failed to update used to show only a bare "Failed" button, with the underlying exception hidden in a hover `title`. The backend already returns the real reason (`{"error": …}`); the row now displays it inline under the plugin name (e.g. the Windows `[WinError 32] … being used by another process` you hit when a loaded plugin's directory can't be renamed in place), and keeps the Update button so you can retry. The note clears on a successful update or a fresh re-check. First half of [#22](https://github.com/masc0t/slopsmith-update-manager/issues/22) — the staged-apply-on-restart path that avoids the file-lock entirely is a separate change.
+
 ### v1.13.1
 - **Fix the table's "weird wrapping"** — the update table laid its columns out with an arbitrary-value Tailwind class, `grid-cols-[1fr_auto_auto_auto_auto_auto]`. Slopsmith core compiles Tailwind by scanning only its own source, so a plugin-specific arbitrary value like that gets purged from the shipped `tailwind.min.css`. `grid` (display:grid) survives, so with no column template every cell dropped into its own implicit row and the whole table stacked vertically and centered. The plugin now ships the utilities its layout needs — the grid template, its column gap, and the fixed column widths (`w-20`/`24`/`28`/`40`/`44`) — in a small `#updater-root`-scoped `<style>` block (values matching Tailwind's output exactly), so the layout no longer depends on core's build state. Immune to purges and to plugin-CSS injection-order changes alike. Closes [#20](https://github.com/masc0t/slopsmith-update-manager/issues/20).
 
