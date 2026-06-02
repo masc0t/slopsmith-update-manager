@@ -1,4 +1,20 @@
-<div class="max-w-5xl mx-auto px-6 pt-24 pb-16">
+<div id="updater-root" class="max-w-5xl mx-auto px-6 pt-24 pb-16">
+    <!--
+        Self-contained fallbacks for the fixed-width utilities this plugin's
+        table layout depends on. The host compiles Tailwind by scanning only
+        its own source, so width classes it doesn't use itself (w-28, w-44, …)
+        get purged from the shipped CSS and the columns collapse (see #20).
+        These match Tailwind's default scale exactly, so they're harmless when
+        the host build happens to include them too.
+    -->
+    <style>
+        #updater-root .w-20 { width: 5rem; }
+        #updater-root .w-24 { width: 6rem; }
+        #updater-root .w-28 { width: 7rem; }
+        #updater-root .w-40 { width: 10rem; }
+        #updater-root .w-44 { width: 11rem; }
+        #updater-root .text-\[10px\] { font-size: 10px; line-height: 1; }
+    </style>
     <button onclick="showScreen('home')" class="text-gray-500 hover:text-white text-sm mb-6 flex items-center gap-1">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg> Back
     </button>
