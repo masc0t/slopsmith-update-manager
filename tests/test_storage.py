@@ -719,7 +719,7 @@ def test_update_bundled_in_place_on_docker(client, fake_dirs, monkeypatch):
     monkeypatch.setattr(routes, "_latest_sha", lambda o, r, b: "abc1234" * 5)
     captured = {}
     monkeypatch.setattr(routes, "_download_and_replace",
-                        lambda owner, repo, ref, target, preserve_git: captured.update(target=target))
+                        lambda owner, repo, ref, target, preserve_git=False: captured.update(target=target))
     monkeypatch.setattr(routes, "_write_marker", lambda *a, **kw: None)
 
     r = client.post("/api/plugins/update_manager/update/bundle_me")
@@ -747,7 +747,7 @@ def test_update_readonly_bundled_writes_override_copy(tmp_path, monkeypatch):
     monkeypatch.setattr(routes, "_latest_sha", lambda o, r, b: "abc1234" * 5)
     captured = {}
     monkeypatch.setattr(routes, "_download_and_replace",
-                        lambda owner, repo, ref, target, preserve_git: captured.update(target=target))
+                        lambda owner, repo, ref, target, preserve_git=False: captured.update(target=target))
     monkeypatch.setattr(routes, "_write_marker", lambda *a, **kw: None)
 
     app = FastAPI()
@@ -762,6 +762,45 @@ def test_update_readonly_bundled_writes_override_copy(tmp_path, monkeypatch):
     assert body.get("ok") is True, body
     assert body.get("overrode_bundled") is True, body
     assert captured["target"] == user_dir / "midi_capo"
+
+
+def test_update_manager_self_update_uses_override_copy_on_desktop(tmp_path, monkeypatch):
+    """update_manager now updates itself through the same copy-overwrite
+    path as any other plugin (the old staging dance never applied on
+    desktop). On desktop its read-only bundled copy is updated by writing
+    an override under PLUGINS_DIR."""
+    user_dir = tmp_path / "user_plugins"
+    bundled_dir = tmp_path / "bundled_plugins"
+    user_dir.mkdir()
+    bundled_dir.mkdir()
+    _write_plugin(bundled_dir, "update_manager")
+    monkeypatch.setattr(routes, "PLUGINS_DIR", user_dir)
+    monkeypatch.setattr(routes, "BUNDLED_PLUGINS_DIR", bundled_dir)
+    monkeypatch.setattr(routes, "CACHE_DIR", tmp_path / "cache")
+
+    monkeypatch.setattr(routes, "_resolve_source",
+                        lambda t, **kw: {"owner": "masc0t", "repo": "slopsmith-update-manager",
+                                         "branch": "main", "source": "registry"})
+    monkeypatch.setattr(routes, "_default_branch", lambda o, r: "main")
+    monkeypatch.setattr(routes, "_latest_sha", lambda o, r, b: "abc1234" * 5)
+    captured = {}
+    monkeypatch.setattr(routes, "_download_and_replace",
+                        lambda owner, repo, ref, target, preserve_git=False: captured.update(target=target))
+    monkeypatch.setattr(routes, "_write_marker", lambda *a, **kw: None)
+
+    app = FastAPI()
+    routes.setup(app, {
+        "get_dlc_dir": lambda: tmp_path, "get_sloppak_cache_dir": lambda: tmp_path,
+        "config_dir": tmp_path, "extract_meta": lambda *a, **k: None, "meta_db": None,
+        "load_sibling": lambda n: None, "log": __import__("logging").getLogger("test"),
+    })
+    with TestClient(app) as c:
+        r = c.post("/api/plugins/update_manager/update/update_manager")
+    body = r.json()
+    assert body.get("ok") is True, body
+    assert body.get("overrode_bundled") is True, body
+    # Applied to the writable override, not the read-only bundled copy.
+    assert captured["target"] == user_dir / "update_manager"
 
 
 # ── _norm_key / _repo_slug ────────────────────────────────────────────

@@ -10,7 +10,7 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 - **Browse the registry** — parses the "Available Plugins" table from slopsmith's README and lists every plugin with a one-click Install button
 - **Filter** — search by name, description, or directory
 - **Plugin update detection** — compares each installed plugin's commit SHA against its GitHub default branch (works without the `git` binary)
-- **One-click plugin update** — re-downloads the latest source via GitHub zip and replaces the plugin directory atomically
+- **One-click plugin update** — re-downloads the latest source via GitHub zip and copy-overwrites it onto the plugin directory (in place, no directory rename — works on Windows even while the plugin is loaded)
 - **Slopsmith core updates** — tracks `byrongamatos/slopsmith` alongside your plugins, overlays updates onto the bind-mounted code paths (`server.py`, `ug_browser.py`, `lib/`, `static/`)
 - **Rebuild-required detection** — if an upstream commit touches unmounted files (`Dockerfile`, `requirements.txt`, `docker-compose.yml`, etc.) the update is blocked and the UI shows a copy-paste host command
 - **Update all** — sequentially updates the core plus every plugin that's behind
@@ -19,6 +19,9 @@ A plugin for [Slopsmith](https://github.com/byrongamatos/slopsmith) that install
 - **In-place restart** — `Restart now` button re-execs the uvicorn process via `os.execv` without touching Docker, preserving PID 1 and container lifetime
 
 ## What's New
+
+### v1.14.0
+- **Updates no longer fail on Windows (and the desktop self-update works)** — applying an update used to rename the plugin directory (`target` → `target.bak`, then move the new copy into place). On Windows you can't rename a directory that contains an open file, so updating a *loaded* plugin (its `routes.py` imported, its `screen.js`/`screen.html` being served) failed with `PermissionError [WinError 32] … being used by another process` — the bare "Failed" in [#22](https://github.com/masc0t/slopsmith-update-manager/issues/22). Updates now **copy-overwrite** the new files in place (extracted to a temp dir first, so a failed download never touches your install), which Windows allows even while the plugin is loaded; the new code loads on the next restart, exactly as before. The same change also routes **update_manager updating itself** through this path instead of the old stage-and-swap-on-restart dance — which on the desktop app staged the update but *never applied it* (the apply step only ran in the Docker `/restart` endpoint the desktop never calls). Closes the file-lock half of [#22](https://github.com/masc0t/slopsmith-update-manager/issues/22).
 
 ### v1.13.2
 - **Surface the real error when an update fails** — clicking Update on a plugin that failed to update used to show only a bare "Failed" button, with the underlying exception hidden in a hover `title`. The backend already returns the real reason (`{"error": …}`); the row now displays it inline under the plugin name (e.g. the Windows `[WinError 32] … being used by another process` you hit when a loaded plugin's directory can't be renamed in place), and keeps the Update button so you can retry. The note clears on a successful update or a fresh re-check. First half of [#22](https://github.com/masc0t/slopsmith-update-manager/issues/22) — the staged-apply-on-restart path that avoids the file-lock entirely is a separate change.
